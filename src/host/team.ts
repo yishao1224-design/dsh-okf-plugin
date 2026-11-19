@@ -1,7 +1,10 @@
 /**
- * The Team Wiki: one git repository whose wiki folder (default `okf`) holds
- * the team's project wikis, each a folder with its own SCHEMA.md, sharing the
- * repository's `scripts/okf.py`, CI and auto-merge rule.
+ * The Team Wiki: one hub repository holding every project's OKF bundle, with
+ * the projects listed in its AGENTS.md registry (see registry.ts), a shared
+ * `scripts/okf.py` and `skills/kb-*`, and `published/Projects/<project>/`
+ * (pages kb-publish renders for people, synced to the Azure DevOps wiki after
+ * merge). Without a registry, every folder holding a SCHEMA.md under the wiki
+ * root (default: the repository root) is a project.
  *
  *     <libraryDir>/team/
  *       team.json          the connected repository + maintenance workspaces
@@ -36,6 +39,7 @@ import { judge } from './eligibility.ts'
 import type { ChangedFile } from './eligibility.ts'
 import { parsePage, text as metaText } from './frontmatter.ts'
 import { parseRemote } from './git.ts'
+import { addRegistryRow, parseRegistry } from './registry.ts'
 import { GitHub, parseGitHubRemote } from './github.ts'
 import { canonical, cleanRepoPath, LibraryError, TOKEN_ENV } from './library.ts'
 import type { Library } from './library.ts'
@@ -87,7 +91,7 @@ export interface Team {
   refresh(): Promise<TeamStatus>
   wiki(folder: string): Promise<WikiDetail>
   pulls(force?: boolean): Promise<PullsAnswer>
-  create(request: { name: string, folder?: string, template?: string }): Promise<MaintainAnswer>
+  create(request: CreateRequest): Promise<MaintainAnswer>
   maintain(folder: string): Promise<MaintainAnswer>
   changes(id: string): Promise<ChangesAnswer>
   openPr(id: string, request: { title?: string, summary?: string }): Promise<OpenPrAnswer>
@@ -96,6 +100,36 @@ export interface Team {
    * `main/` checkout), so any session can attach it from the OKF chip.
    */
   attach(folder: string): Promise<LibraryEntry>
+}
+
+/** A project as the registry (or a folder scan) names it. */
+interface ProjectInfo {
+  readonly folder: string
+  readonly name: string
+  readonly registered: boolean
+  readonly repo?: string
+  readonly summary?: string
+  readonly owner?: string
+}
+
+/** What New project wiki takes. */
+export interface CreateRequest {
+  readonly name: string
+  readonly folder?: string
+  readonly template?: string
+  /** The project's code repository, for the registry row. */
+  readonly repo?: string
+  readonly owner?: string
+  readonly summary?: string
+}
+
+/**
+ * Where kb-publish puts a project's pages for people.
+ * @param name - the project name as registered.
+ * @returns the repository-relative folder.
+ */
+export function publishedDir(name: string): string {
+  return `published/Projects/${name.replace(/[\\/]/g, '-')}`
 }
 
 /** Folders inside a bundle that are never project wikis of their own. */
@@ -397,22 +431,53 @@ export function openTeam(options: TeamOptions): Team {
 
   const repoName = (team: TeamConfig): string => remoteName(team.url).split('/').at(-1) ?? 'wiki'
 
+  /**
+   * The projects in a checkout: the hub's AGENTS.md registry when it has one,
+   * else every folder holding a SCHEMA.md under the wiki root.
+   */
+  const projectsIn = async (repo: string, team: TeamConfig): Promise<ProjectInfo[]> => {
+    const registry = parseRegistry(await readFile(join(repo, 'AGENTS.md'), 'utf8').catch(() => ''))
+    if (registry !== undefined && registry.entries.length > 0) {
+      return registry.entries.map(entry => ({
+        folder: entry.bundle,
+        name: entry.project,
+        registered: true,
+        ...entry.repo === undefined ? {} : { repo: entry.repo },
+        ...entry.summary === undefined ? {} : { summary: entry.summary },
+        ...entry.owner === undefined ? {} : { owner: entry.owner },
+      }))
+    }
+    const folders = await discoverWikis(repo, team.root)
+    return Promise.all(folders.map(async folder => ({ folder, name: await wikiName(repo, folder, repoName(team)), registered: false })))
+  }
+
+  /** When a project's published pages last changed on the base branch. */
+  const publishedOf = async (name: string): Promise<ProjectWiki['published']> => {
+    const path = publishedDir(name)
+    if (!(await exists(join(mainDir, ...path.split('/'))))) return undefined
+    const updated = await git(mainDir, ['log', '-1', '--format=%cs', '--', path]).catch(() => '')
+    return { path, ...updated === '' ? {} : { updated } }
+  }
+
   /** Every project wiki on the base branch, with counts (cached per commit). */
   const listWikis = async (data: TeamFile): Promise<{ wiki: ProjectWiki, pages: WikiPage[] }[]> => {
     if (data.team === undefined || !(await exists(mainDir))) return []
     const team = data.team
     const commit = data.commit ?? ''
-    const folders = await discoverWikis(mainDir, team.root)
+    const projects = await projectsIn(mainDir, team)
     const out: { wiki: ProjectWiki, pages: WikiPage[] }[] = []
-    for (const folder of folders) {
+    for (const project of projects) {
+      const folder = project.folder
       const open = data.maintains.find(record => record.wiki === folder && record.closed === undefined)
       const cached = statsCache.get(folder)
       if (cached !== undefined && cached.commit === commit && commit !== '') {
         out.push({ wiki: { ...cached.wiki, ...open === undefined ? {} : { maintainId: open.id } }, pages: cached.pages })
         continue
       }
-      const pages = await readWikiPages(join(mainDir, folder))
-      const base: ProjectWiki = { folder, name: await wikiName(mainDir, folder, repoName(team)), stats: statsOf(pages) }
+      const missing = !(await exists(join(mainDir, ...folder.split('/'))))
+      const pages = missing ? [] : await readWikiPages(join(mainDir, ...folder.split('/')))
+      const published = await publishedOf(project.name)
+      const base: ProjectWiki = { ...project, stats: statsOf(pages), ...missing ? { missing: true } : {}, ...published === undefined ? {} : { published } }
       statsCache.set(folder, { commit, wiki: base, pages })
       out.push({ wiki: { ...base, ...open === undefined ? {} : { maintainId: open.id } }, pages })
     }
@@ -463,8 +528,10 @@ export function openTeam(options: TeamOptions): Team {
     })()
     const ref = request.ref?.trim() || undefined
     if (ref !== undefined && (ref.startsWith('-') || /\s|\.\./.test(ref))) throw new LibraryError('bad-ref', 'That is not a branch name.')
-    const root = cleanRepoPath(request.root ?? 'okf') ?? ''
-    const token = tokenFor(remote.provider)
+    const root = cleanRepoPath(request.root ?? '') ?? ''
+    // A GitHub Enterprise host is GitHub too: its pull requests and token are GitHub's.
+    const provider: GitProvider = parseGitHubRemote(request.url, options.githubHost) !== undefined ? 'github' : remote.provider
+    const token = tokenFor(provider)
     await mkdir(options.dir, { recursive: true })
     const temp = join(options.dir, `main.${randomBytes(3).toString('hex')}.tmp`)
     try {
@@ -478,7 +545,7 @@ export function openTeam(options: TeamOptions): Team {
     const data = await load()
     const base = ref ?? await git(mainDir, ['symbolic-ref', '--short', 'refs/remotes/origin/HEAD']).then(value => value.replace(/^origin\//, ''), () => undefined)
       ?? await git(mainDir, ['rev-parse', '--abbrev-ref', 'HEAD'])
-    data.team = { url: request.url.trim(), provider: remote.provider, ...ref === undefined ? {} : { ref }, root, name: remoteName(request.url), connectedAt: new Date().toISOString() }
+    data.team = { url: request.url.trim(), provider, ...ref === undefined ? {} : { ref }, root, name: remoteName(request.url), connectedAt: new Date().toISOString() }
     data.base = base
     await git(mainDir, ['checkout', '--quiet', '--detach'])
     data.commit = await git(mainDir, ['rev-parse', 'HEAD'])
@@ -505,15 +572,16 @@ export function openTeam(options: TeamOptions): Team {
   }
 
   /** Which project wiki a repository path belongs to, if any. */
-  const wikiOfPath = (path: string, known: readonly string[], root: string): string | undefined => {
-    const match = [...known].sort((a, b) => b.length - a.length).find(folder => path.startsWith(`${folder}/`))
-    if (match !== undefined) return match
-    // A wiki the pull request adds is not on the base branch yet.
-    const prefix = root === '' ? '' : `${root}/`
-    if (!path.startsWith(prefix)) return undefined
-    const rest = path.slice(prefix.length).split('/')
-    if (rest.length < 2 || BUNDLE_PARTS.has(rest[0] ?? '')) return known.includes(root) ? root : undefined
-    return `${prefix}${rest[0] ?? ''}`
+  const wikiOfPath = (path: string, projects: readonly ProjectInfo[], added: readonly string[]): string | undefined => {
+    // Pages kb-publish rendered for a project belong to that project.
+    const published = /^published\/Projects\/([^/]+)\//.exec(path)
+    if (published !== null) {
+      const name = published[1] ?? ''
+      return projects.find(project => project.name === name || wikiSlug(project.name) === wikiSlug(name))?.folder
+    }
+    // A wiki the pull request adds is not on the base branch yet: its new SCHEMA.md marks it.
+    const known = [...projects.map(project => project.folder), ...added]
+    return known.sort((a, b) => b.length - a.length).find(folder => folder === '' || path.startsWith(`${folder}/`))
   }
 
   /** Files of a commit range, with the text before and after. */
@@ -546,7 +614,7 @@ export function openTeam(options: TeamOptions): Team {
       const github = new GitHub(options.githubApi, token, target)
       const base = baseOf(data)
       const open = (await github.openPulls()).filter(pull => pull.baseRef === base)
-      const known = await discoverWikis(mainDir, team.root)
+      const projects = await projectsIn(mainDir, team)
       let note: string | undefined
       try {
         await git(mainDir, ['fetch', '--quiet', 'origin', `+refs/heads/${base}:refs/remotes/origin/${base}`, ...open.map(pull => `+refs/pull/${String(pull.number)}/head:refs/okf-pr/${String(pull.number)}`)], token)
@@ -563,7 +631,8 @@ export function openTeam(options: TeamOptions): Team {
           files = await changedFiles(mainDir, mergeBase, ref, token)
           judged = true
         } catch { /* listed without a verdict */ }
-        const wikis = [...new Set(files.map(file => wikiOfPath(file.path, known, team.root)).filter((folder): folder is string => folder !== undefined))]
+        const added = files.filter(file => file.status === 'added' && file.path.endsWith('/SCHEMA.md')).map(file => file.path.slice(0, -'/SCHEMA.md'.length))
+        const wikis = [...new Set(files.map(file => wikiOfPath(file.path, projects, added)).filter((folder): folder is string => folder !== undefined))]
         const record = data.maintains.find(candidate => candidate.branch === pull.headRef)
         if (judged && wikis.length === 0 && record === undefined) continue
         let eligible = false
@@ -619,7 +688,7 @@ export function openTeam(options: TeamOptions): Team {
     origin: { kind: 'local' },
     addedAt: record.createdAt,
     workspace: record.workspace,
-    team: { maintainId: record.id, wiki: record.wiki },
+    team: { maintainId: record.id, wiki: record.wiki, project: record.wikiName },
   })
 
   /** Clone the repository into a fresh maintenance workspace on a new branch. */
@@ -663,15 +732,15 @@ export function openTeam(options: TeamOptions): Team {
       return { record: open, entry, workspace: open.workspace, created: false }
     }
     if (open !== undefined) Object.assign(open, { closed: 'closed' })
-    const known = await discoverWikis(mainDir, team.root)
-    if (!known.includes(folder)) throw new LibraryError('unknown-wiki', `There is no project wiki at ${folder} on the base branch. Refresh, or create it.`, 404)
-    const record = await newWorkspace(data, folder, await wikiName(mainDir, folder, repoName(team)), false)
+    const project = (await projectsIn(mainDir, team)).find(candidate => candidate.folder === folder)
+    if (project === undefined || !(await exists(join(mainDir, ...folder.split('/'))))) throw new LibraryError('unknown-wiki', `There is no project wiki at ${folder} on the base branch. Refresh, or create it.`, 404)
+    const record = await newWorkspace(data, folder, project.name, false)
     await save(data)
     const entry = await options.library.put(entryFor(record))
     return { record, entry, workspace: record.workspace, created: true }
   })
 
-  const create = async (request: { name: string, folder?: string, template?: string }): Promise<MaintainAnswer> => {
+  const create = async (request: CreateRequest): Promise<MaintainAnswer> => {
     const answer = await serial(async () => {
       const data = await load()
       const team = needTeam(data)
@@ -680,18 +749,32 @@ export function openTeam(options: TeamOptions): Team {
       const seg = wikiSlug(request.folder?.trim() || name)
       if (seg === '') throw new LibraryError('bad-folder', 'The folder name needs at least one letter or digit.')
       const folder = team.root === '' ? seg : `${team.root}/${seg}`
-      if (await exists(join(mainDir, folder))) throw new LibraryError('exists', `${folder} already exists in the team repository.`, 409)
+      const projects = await projectsIn(mainDir, team)
+      if (await exists(join(mainDir, folder)) || projects.some(project => project.folder === folder)) throw new LibraryError('exists', `${folder} already exists in the team repository.`, 409)
+      if (projects.some(project => project.name.toLowerCase() === name.toLowerCase())) throw new LibraryError('exists', `The registry already has a project named ${name}.`, 409)
       if (data.maintains.some(record => record.wiki === folder && record.closed === undefined)) throw new LibraryError('exists', `A workspace for ${folder} is already open. Use Maintain on it.`, 409)
       const template = request.template ?? 'default'
       let schemaFrom: string | undefined
       if (template.startsWith('copy:')) {
         schemaFrom = template.slice('copy:'.length)
-        const known = await discoverWikis(mainDir, team.root)
-        if (!known.includes(schemaFrom)) throw new LibraryError('unknown-wiki', `There is no project wiki at ${schemaFrom} to copy SCHEMA.md from.`, 404)
+        if (!projects.some(project => project.folder === schemaFrom) || !(await isFile(join(mainDir, schemaFrom, 'SCHEMA.md')))) throw new LibraryError('unknown-wiki', `There is no project wiki at ${schemaFrom} to copy SCHEMA.md from.`, 404)
       }
       const record = await newWorkspace(data, folder, name, true)
       await save(data)
       await scaffold(record.workspace, folder, name, schemaFrom === undefined ? undefined : join(mainDir, schemaFrom, 'SCHEMA.md'))
+      // Register the project in the hub's AGENTS.md (created when missing).
+      const agents = join(record.workspace, 'AGENTS.md')
+      const before = await readFile(agents, 'utf8').catch(() => '')
+      const clean = (value: string | undefined): string | undefined => (value === undefined || value.trim() === '' ? undefined : value.trim().slice(0, 300))
+      const repo = clean(request.repo)
+      const owner = clean(request.owner)
+      const summary = clean(request.summary)
+      // The first registry lists the bundles the repository already has, or they would drop out of the list.
+      let source = before
+      if (parseRegistry(before) === undefined) {
+        for (const project of projects) source = addRegistryRow(source, { project: project.name, bundle: project.folder })
+      }
+      await writeFile(agents, addRegistryRow(source, { project: name, bundle: folder, ...repo === undefined ? {} : { repo }, ...owner === undefined ? {} : { owner }, ...summary === undefined ? {} : { summary } }))
       const entry = await options.library.put(entryFor(record))
       return { record, entry, workspace: record.workspace, created: true }
     })
@@ -776,6 +859,9 @@ export function openTeam(options: TeamOptions): Team {
     const token = tokenFor(team.provider)
     const base = baseOf(data)
     const prefix = `${record.wiki}/`
+    // What a wiki pull request may carry: the bundle, the project's published pages, and (for a new project) its registry row.
+    const scope = [record.wiki, publishedDir(record.wikiName), ...record.isNew === true ? ['AGENTS.md'] : []]
+    const inScope = (path: string): boolean => scope.some(item => path === item || path.startsWith(`${item}/`))
     const notes: string[] = []
     const title = request.title?.trim() || (record.pr === undefined ? `Update the ${record.wikiName} wiki` : '')
     const summary = request.summary?.trim() || `Changes to \`${record.wiki}\` made in a DSH maintenance session.`
@@ -802,8 +888,8 @@ export function openTeam(options: TeamOptions): Team {
     // 1 · The repository's own toolchain.
     const changed = parseStatus(await git(repo, ['status', '--porcelain=v1', '-z', '--untracked-files=all']))
     const inside = changed.filter(change => change.path.startsWith(prefix))
-    const outside = changed.filter(change => !change.path.startsWith(prefix))
-    if (outside.length > 0) notes.push(`Left out (outside ${record.wiki}): ${outside.map(change => change.path).slice(0, 20).join(', ')}`)
+    const outside = changed.filter(change => !inScope(change.path))
+    if (outside.length > 0) notes.push(`Left out (outside ${scope.join(', ')}): ${outside.map(change => change.path).slice(0, 20).join(', ')}`)
     const script = join(repo, options.okfScript)
     const hasScript = await isFile(script)
     const okf = (...args: string[]): Promise<string> => run(options.python, [script, ...args, '--bundle', record.wiki], { cwd: repo, timeoutMs: options.timeoutMs })
@@ -836,7 +922,12 @@ export function openTeam(options: TeamOptions): Team {
     }
 
     // 2 · Commit only the project wiki's folder.
-    await git(repo, ['add', '-A', '--', record.wiki])
+    const present: string[] = []
+    for (const item of scope) {
+      const tracked = await git(repo, ['ls-files', '--', item]).catch(() => '')
+      if (tracked !== '' || await exists(join(repo, ...item.split('/')))) present.push(item)
+    }
+    await git(repo, ['add', '-A', '--', ...present])
     const staged = await git(repo, ['diff', '--cached', '--name-only'])
     if (staged !== '') {
       const email = await git(repo, ['config', 'user.email']).catch(() => '')
@@ -845,7 +936,7 @@ export function openTeam(options: TeamOptions): Team {
       await git(repo, [...who, 'commit', '--quiet', '-m', `${title || `Update the ${record.wikiName} wiki`}\n\n${summary}\n\nWiki-Workspace: ${record.id}`])
     }
     const ahead = mergeBase === undefined ? '1' : await git(repo, ['rev-list', '--count', `${mergeBase}..HEAD`]).catch(() => '0')
-    if (ahead === '0') throw new LibraryError('nothing-changed', `Nothing in ${record.wiki} has changed yet. Ask the session to write or edit pages first.`, 409)
+    if (ahead === '0') throw new LibraryError('nothing-changed', `Nothing in ${record.wiki} (or its published pages) has changed yet. Ask the session to write or edit pages first.`, 409)
     const commit = await git(repo, ['rev-parse', 'HEAD'])
 
     // 3 · Judge the whole branch against the base, as CI will.

@@ -153,8 +153,9 @@ const EDIT_RULES = [
  * @param actor - the `generated.by` value to write.
  * @returns the lines.
  */
-function teamEditRules(actor: string): string[] {
+function teamEditRules(actor: string, team: NonNullable<LibraryEntry['team']>): string[] {
   const date = new Date().toISOString().slice(0, 10)
+  const published = `published/Projects/${(team.project ?? team.wiki).replace(/[\\/]/g, '-')}/`
   return [
     "- You may edit this project wiki: it is a team wiki maintenance workspace (its own git clone on a wiki branch) inside this session's workspace. Edit only files under the bundle root. Keep it a valid OKF bundle:",
     '  - Read SCHEMA.md before your first edit, and follow its conventions (types, tags, frontmatter templates).',
@@ -163,6 +164,7 @@ function teamEditRules(actor: string): string[] {
     '  - Never add or edit a verified entry, never set lifecycle: active, and never write human:… anywhere. Only a person may mark a page reviewed.',
     '  - Never edit files under sources/ that already exist; add a new dated capture instead. Do not change SCHEMA.md unless the user asks.',
     '  - A new page gets a line in index.md under the right section. When you rename or remove a page, update index.md and the links that point at it. Links are bundle-relative (/concepts/foo.md).',
+    `  - The hub's AGENTS.md is the project registry; do not edit it. Pages for people live in ${published} at the repository root (kb-publish renders them from the bundle when the user asks to publish); edit nothing else outside the bundle. Published pages are synced to the team's Azure DevOps wiki after merge, so a change there always waits for a person.`,
     '  - Do not run git commit or git push. When the user is happy with the changes, tell them to press Open pull request in the session header: it runs okf.py links, index, lint and log, commits, pushes and opens the pull request. A change that only touches unreviewed pages may merge on its own; editing a reviewed page needs a person.',
   ]
 }
@@ -196,7 +198,7 @@ export function contextText(entry: LibraryEntry, index: string | undefined, opti
       ? `the project wiki ${entry.team.wiki} in a team wiki maintenance workspace${editable ? " (this session's workspace)" : `, ${entry.workspace ?? ''}`}`
       : editable ? "a git working copy in this session's workspace" : 'a folder on this machine'
   const editing = editable
-    ? entry.team !== undefined ? teamEditRules(options.agentActor ?? 'dsh/agent') : EDIT_RULES
+    ? entry.team !== undefined ? teamEditRules(options.agentActor ?? 'dsh/agent', entry.team) : EDIT_RULES
     : entry.workspace === undefined
       ? ['- Do not edit files in the bundle.']
       : [`- Do not edit the bundle from this session. It is edited from its own workspace, ${entry.workspace}; if the user wants changes, tell them to open that workspace (OKF dialog → Open editing workspace).`]

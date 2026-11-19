@@ -13,13 +13,14 @@
     "lib/client.js",
     "lib/check-pr.js",
     "examples/wiki-auto-merge.yml",
+    "examples/wiki-publish-to-ado.yml",
     "cordis.patch.yml",
     "README.md"
   ],
   "scripts": {
     "build": "node build.mjs",
     "typecheck": "tsc --noEmit",
-    "smoke": "node scripts/smoke.mjs && node scripts/team-smoke.mjs"
+    "smoke": "node scripts/smoke.mjs && node scripts/team-smoke.mjs && node scripts/hub-smoke.mjs"
   },
   "dsh": {
     "bundle": {

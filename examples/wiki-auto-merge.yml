@@ -1,10 +1,13 @@
 # Auto-merge for agent wiki pull requests.
 #
-# Copy to .github/workflows/wiki-auto-merge.yml in the wiki repository, and
+# Copy to .github/workflows/wiki-auto-merge.yml in the team wiki hub, and
 # lib/check-pr.js from this plugin (dsh-okf) to .github/wiki/check-pr.js.
+# Works on github.com and on GitHub Enterprise (set `runs-on` to your runners).
 #
-# Project wikis live in folders under okf/ (okf/payments, okf/settlement, …),
-# each with its own SCHEMA.md; okf/ itself may also be a single bundle.
+# The hub keeps one OKF bundle per project (project-a/, project-b/, …), listed
+# in the AGENTS.md project registry. A pull request may touch one project only.
+# Changes to published/ (pages for people, synced to the Azure DevOps wiki) or
+# to AGENTS.md always need a person.
 #
 # The plugin labels a pull request `wiki-auto-merge` when it believes the change
 # is eligible. This workflow never trusts that label alone: it re-runs lint and
@@ -42,7 +45,7 @@ jobs:
         id: check
         run: |
           git show "origin/${{ github.base_ref }}:.github/wiki/check-pr.js" > "$RUNNER_TEMP/check-pr.mjs"
-          node "$RUNNER_TEMP/check-pr.mjs" "origin/${{ github.base_ref }}" HEAD okf
+          node "$RUNNER_TEMP/check-pr.mjs" "origin/${{ github.base_ref }}" HEAD
       - name: Lint that project wiki (okf.py from the base branch)
         run: |
           git show "origin/${{ github.base_ref }}:scripts/okf.py" > scripts/okf.py

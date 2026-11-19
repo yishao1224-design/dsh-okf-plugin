@@ -451,7 +451,7 @@ check(mainEntry.options.inject().store === store, 'the Team Wiki page shares the
 check(teamPage().includes('Loading the team wiki'), 'the page starts loading')
 await store.loadTeam()
 html = teamPage()
-check(html.includes('>Team Wiki<') && html.includes('Connect the team wiki repository') && html.includes('value="okf"'), `team page without a repository: ${html.slice(0, 500)}`)
+check(html.includes('>Team Wiki<') && html.includes('Connect the team wiki repository') && html.includes('placeholder="blank = repository root"'), `team page without a repository: ${html.slice(0, 500)}`)
 const prEntry = entries.find(item => item.options.name === 'conversation.session.header.utilities' && item.options.id === 'okf-team-pr')
 check(renderToStaticMarkup(React.createElement(prEntry.component, { ...prEntry.options.inject('s-1'), sessionId: 's-1', t })) === '', 'Open pull request stays hidden outside a maintenance session')
 check(client.slugify('Settlement Wiki') === 'settlement' && client.slugify('Payments-Ops') === 'payments-ops', 'folder suggestions')

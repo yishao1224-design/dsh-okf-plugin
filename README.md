@@ -100,18 +100,47 @@ The token goes to git as an `http.extraHeader` through `GIT_CONFIG_*` environmen
 The **Team Wiki** entry in the sidebar (under User stories) opens a page in the main column.
 
 ```text
- Team Wiki · github.com/acme/team-wiki (main)      [Refresh] [Change repository] [+ New project wiki]
+ Team Wiki · github.acme.com/acme/team-wiki (main)  [Refresh] [Change repository] [+ New project wiki]
  Project wikis | All bundles
  ┌──────────────────────┬────────────────────────────────────────────────────────────────┐
- │ Onboarding           │ Payments  okf/payments                [Open workspace] [Preview] │
- │ okf/onboarding       │ 16 Pages · 1 Reviewed · 15 Unreviewed · 11 Overdue review      │
- │ ▸ Payments  Being m… │ Pull requests (2) | Pages (16) | Needs review (15)             │
- │ okf/payments · 2 PRs │ Add the release process page #1  Auto-merge eligible · CI run… │
- │                      │ Clarify lifecycle states #2      Needs human review            │
+ │ Onboarding           │ Payments  payments/                   [Open workspace] [Preview] │
+ │ onboarding/ · @dan   │ Card and wallet payments                                       │
+ │ ▸ Payments  Being m… │ Owner @alice · Code repository · Published 2026-11-18          │
+ │ payments/ · @alice   │ 16 Pages · 1 Reviewed · 15 Unreviewed · 11 Overdue review      │
+ │ Ledger               │ Pull requests (2) | Pages (16) | Needs review (15)             │
+ │ Registered, but the… │ ▸ AGENTS.md snippet for the code repository           [Copy]   │
  └──────────────────────┴────────────────────────────────────────────────────────────────┘
 ```
 
-**The repository.** One git repository holds every project wiki of the team, each in its own folder with a `SCHEMA.md` under the wiki folder (default `okf/`: `okf/payments`, `okf/onboarding`, …). If `okf/` itself has a `SCHEMA.md` it is listed as a wiki too, so a single-bundle repository such as knowledgeAgent works as is. The wikis share `scripts/okf.py`, CI and the auto-merge rule. Connect it once on the page (URL, optional base branch, wiki folder), or preset it in the row config (`team.url`). The plugin keeps a clone of the base branch in `<library>/team/main` for the page, and never edits it.
+**The hub repository.** One git repository (GitHub or GitHub Enterprise) holds the knowledge of every project of the team:
+
+```text
+team-wiki/
+├── AGENTS.md              project registry + rules for agents
+├── scripts/okf.py         shared toolchain
+├── skills/kb-*            shared skills
+├── payments/              one OKF bundle per project (SCHEMA.md, index.md, log.md, concepts/, sources/ …)
+├── ledger/
+└── published/Projects/    what kb-publish rendered, synced to the Azure DevOps wiki's Projects/ section
+    ├── Payments.md
+    └── Payments/…
+```
+
+The **project registry** is the first Markdown table in `AGENTS.md` with a `Project` and a `Bundle` column. `Repo`, `Summary` and `Owner` are optional; columns are matched by name, in any order, and cells may use backticks and links:
+
+```markdown
+## Project registry
+
+| Project | Repo | Summary | Owner | Bundle |
+|---|---|---|---|---|
+| Payments | https://github.acme.com/pay/payments-service | Card and wallet payments | @alice | `payments/` |
+```
+
+The page lists the registered projects in that order, with their summary, owner and code repository. A registered project whose folder is not there yet is shown as such. A bundle with a `SCHEMA.md` that is not registered still appears, marked "Not in the AGENTS.md registry". **Without a registry** the page falls back to folders with a `SCHEMA.md` directly under the wiki folder (`team.root`, blank = the repository root; set `okf` for the older `okf/<project>` layout, or for a single-bundle repository such as knowledgeAgent).
+
+Each project shows whether `published/Projects/<Project>/` exists and when it last changed on the base branch. The detail pane also has the **AGENTS.md snippet for the code repository**: a short section, with Copy, for the project's own code repository so agents there read the bundle in the hub instead of copying pages.
+
+Connect the hub once on the page (URL, optional base branch, wiki folder), or preset it in the row config (`team.url`). The plugin keeps a clone of the base branch in `<library>/team/main` for the page, and never edits it.
 
 **Review state** needs no new field. A page counts as **reviewed** when `lifecycle: active` and its latest `verified` entry is by `human:<id>` and is not older than `generated.at`. Everything else is **unreviewed**. **Overdue review** is `lifecycle: needs_review` or a `stale_after` date in the past.
 
@@ -121,18 +150,22 @@ The **Team Wiki** entry in the sidebar (under User stories) opens a page in the 
 
 1. resets any reviewed page that was edited without resetting its stamp to an unreviewed draft (its `verified` history stays);
 2. runs the repository's own `scripts/okf.py` over the wiki: `links`, `index`, `lint` (a failure stops here and nothing is committed), and one `log` line per changed page;
-3. commits **only the wiki's folder** (other changes are left out and listed), pushes the branch with the token, and opens or updates the GitHub pull request;
-4. judges the whole branch against the base: it is **auto-merge eligible** only when every changed file is an unreviewed (or new) page, a new capture under `sources/`, `index.md` or `log.md`. Editing a reviewed page, deleting a page, changing `SCHEMA.md` or `archive/`, touching an existing capture, anything outside the wiki, or a page claiming a human review needs a person. Eligible pull requests get the `wiki-auto-merge` label; the label comes off when that stops being true.
+3. commits **only the wiki's folder**, its `published/Projects/<Project>/` pages, and (for a new project) `AGENTS.md`; other changes are left out and listed. It pushes the branch with the token, and opens or updates the GitHub pull request;
+4. judges the whole branch against the base: it is **auto-merge eligible** only when every changed file is an unreviewed (or new) page, a new capture under `sources/`, `index.md` or `log.md`. Editing a reviewed page, deleting a page, changing `SCHEMA.md` or `archive/`, touching an existing capture, any change under `published/` or to `AGENTS.md`, anything outside the wiki, or a page claiming a human review needs a person. Eligible pull requests get the `wiki-auto-merge` label; the label comes off when that stops being true.
 
-**CI decides, not the label.** `examples/wiki-auto-merge.yml` is a workflow for the wiki repository: it re-runs the same eligibility check with `lib/check-pr.js` and `okf.py lint`, both taken **from the base branch** so a pull request cannot weaken the rules that judge it, and only then turns on GitHub auto-merge. Copy `lib/check-pr.js` to `.github/wiki/check-pr.js` in the wiki repository, enable "Allow auto-merge", and require the job in branch protection.
+**CI decides, not the label.** `examples/wiki-auto-merge.yml` is a workflow for the hub repository: it re-runs the same eligibility check with `lib/check-pr.js` and `okf.py lint`, both taken **from the base branch** so a pull request cannot weaken the rules that judge it, and only then turns on GitHub auto-merge. Copy `lib/check-pr.js` to `.github/wiki/check-pr.js` in the hub, enable "Allow auto-merge", and require the job in branch protection. The checker maps each changed file to a project through the registry (on either side of the change), so a pull request must touch exactly one project.
+
+**Publishing to the Azure DevOps wiki.** `examples/wiki-publish-to-ado.yml` runs when a merge to `main` changes `published/Projects/**`. It clones the existing ADO wiki repository (`vars.ADO_WIKI_REPO`, branch `vars.ADO_WIKI_BRANCH`, default `wikiMaster`) with `secrets.ADO_WIKI_PAT`, mirrors `published/Projects/` into its `Projects/` folder, and pushes. It refuses to commit if anything outside `Projects/` changed, so hand-written wiki pages are never touched. Since every change under `published/` needs a person, nothing reaches the ADO wiki without a review.
 
 **The pull request list** reads open pull requests from GitHub (title, author, labels, checks), fetches their branches into the clone, and computes the files and the verdict from git with the same rule. A pull request appears under every project wiki it touches; one that touches no wiki is not listed.
 
-**New project wiki** takes a name, a folder and a starting `SCHEMA.md` (copied from an existing wiki, or `okf.py`'s default). It makes a workspace on `wiki/new-<folder>-<hex>`, runs `okf.py init` and `index` for the new folder (and drops what `init` touched outside it), writes `wiki_name: <name>` into `SCHEMA.md`, opens the setup as the first pull request (a new `SCHEMA.md` always needs a person), and opens a session in the workspace. The wiki joins the list once that pull request merges.
+**New project wiki** takes a name, a folder, the code repository URL, an owner, a one-line summary and a starting `SCHEMA.md` (copied from an existing wiki, or `okf.py`'s default). It adds the project's row to the `AGENTS.md` registry (creating the section, and listing the bundles already there, when the hub has none yet). It makes a workspace on `wiki/new-<folder>-<hex>`, runs `okf.py init` and `index` for the new folder (and drops what `init` touched outside it), writes `wiki_name: <name>` into `SCHEMA.md`, opens the setup as the first pull request (a new `SCHEMA.md` and the registry change always need a person), and opens a session in the workspace. The wiki joins the list once that pull request merges.
 
 **Preview** adds the wiki as it is on the base branch to the library (read-only) and opens it in the OKF dialog; any session can then attach it from the OKF chip. **All bundles** lists the whole library.
 
-**Tokens.** Pushing and opening pull requests use `DSH_OKF_GITHUB_TOKEN` (or `DSH_OKF_GIT_TOKEN`), as a git `http.extraHeader` through `GIT_CONFIG_*` and as a `Bearer` header to the REST API, never in argv, a URL or a config file. Without a token the branch is still pushed when git's own credentials allow it, and the page says the pull request could not be opened. Azure DevOps repositories work for Maintain, New project wiki and pushing; their pull requests are not listed or opened yet.
+**Tokens.** Pushing and opening pull requests use `DSH_OKF_GITHUB_TOKEN` (or `DSH_OKF_GIT_TOKEN`), as a git `http.extraHeader` through `GIT_CONFIG_*` and as a `Bearer` header to the REST API, never in argv, a URL or a config file. Without a token the branch is still pushed when git's own credentials allow it, and the page says the pull request could not be opened. For **GitHub Enterprise** set `team.githubHost` (for example `github.acme.com`); the API defaults to `https://<host>/api/v3`. An Azure DevOps hub works for Maintain, New project wiki and pushing, but its pull requests are not listed or opened.
+
+**Still to do in knowledgeAgent** (the plugin only reads and writes the layout above): a `kb-publish` skill that renders a bundle into `published/Projects/<Project>/`; `kb-ingest` finding the bundle through the hub's registry and opening its pull request against the hub; and the hub's own `AGENTS.md` rules.
 
 ## How the agent uses the bundle
 
@@ -159,10 +192,10 @@ Optional settings go under the row in `cordis.patch.yml`. A patch replaces the w
 | `promptContext` | `true` | Add the per-session context |
 | `team.url` | — | Team wiki repository to connect when none is connected yet |
 | `team.ref` | the remote's default branch | Base branch of the team wiki |
-| `team.root` | `okf` | Folder holding the project wikis |
+| `team.root` | `''` (repository root) | Where to look for bundles when `AGENTS.md` has no registry |
 | `team.python` | `python` on Windows, else `python3` | Runs the repository's `scripts/okf.py` |
 | `team.okfScript` | `scripts/okf.py` | The toolchain, relative to the repository |
-| `team.githubHost` / `team.githubApi` | `github.com` / `https://api.github.com` | For GitHub Enterprise |
+| `team.githubHost` / `team.githubApi` | `github.com` / `https://api.github.com` (`https://<host>/api/v3` for another host) | For GitHub Enterprise |
 | `team.autoMergeLabel` | `wiki-auto-merge` | Label on eligible pull requests; `''` sets none |
 | `team.agentActor` | `dsh/agent` | `generated.by` the maintenance rules ask for |
 | `team.commitAuthor` | `DSH Wiki <dsh-wiki@users.noreply.github.com>` | Committer when git has no identity |
@@ -222,7 +255,7 @@ dsh-okf-plugin/
 npm install
 npm run typecheck
 npm run build      # -> lib/index.js + lib/client.js + lib/check-pr.js
-npm run smoke      # smoke.mjs, then team-smoke.mjs
+npm run smoke      # smoke.mjs, team-smoke.mjs, hub-smoke.mjs
 ```
 
 `lib/` is committed on purpose. The profile installs the package as it is, with no build toolchain. The Host artifact may import only Node built-ins, and `build.mjs` fails if it imports anything else.
@@ -239,6 +272,8 @@ npm run smoke      # smoke.mjs, then team-smoke.mjs
 - **Browser half:** the registrations, the shared store, the chip and dialog markup, the offline state, and the markdown safety rules (raw HTML renders as text, no `javascript:` hrefs, external links open with `noopener`).
 
 **`scripts/team-smoke.mjs`** needs a knowledgeAgent checkout (`WIKI_FIXTURE`, else `../knowledgeAgent`) and Python. A bare repository with `okf/payments` (knowledgeAgent's bundle, one page stamped reviewed by `alice`) plays the team wiki; git reaches it under a GitHub URL through `url.<file>.insteadOf`, and a local HTTP server stands in for the GitHub API. It covers connect, review counts, Preview, Maintain (and reuse), the team rules in the prompt context, Open pull request (an eligible new page with its `index.md`/`log.md` lines and a stray change left out; then a reviewed page edited without reset, which is reset and needs a person; then a lint failure that commits nothing), the PR list and its verdicts, `lib/check-pr.js` agreeing in both cases, New project wiki with its setup pull request, and a merge that closes the workspace so Maintain starts fresh.
+
+**`scripts/hub-smoke.mjs`** covers the hub layout on a GitHub Enterprise host (`github.acme.com`, API under `/api/v3`): the registry drives the project list (summary, owner, repo link, a registered but missing folder, publish status), a new page is eligible, a change under `published/Projects/Payments/` goes in the same pull request and needs a person while another project's published page is left out, New project wiki adds a registry row (with `|` escaped) in the same pull request, a registered name is refused, and `lib/check-pr.js` maps every case through the registry.
 
 **`scripts/harness-check.mjs`** applies the built Host module next to DSH's real `SystemPrompt` and `ToolRuntime`, provided by sibling plugins as in the Harness. It checks that the module applies under strict injection, that `assemble({ agent })` carries the bundle for the right session only, and that no `okf_*` tool reaches the real registry. It also checks that disposal removes everything.
 

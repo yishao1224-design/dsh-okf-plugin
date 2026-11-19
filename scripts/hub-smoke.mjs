@@ -1,0 +1,224 @@
+/**
+ * Smoke-test the team wiki hub layout on GitHub Enterprise:
+ *
+ *     AGENTS.md                 project registry (Project | Repo | Summary | Owner | Bundle)
+ *     scripts/okf.py            shared toolchain
+ *     payments/                 one OKF bundle per project, at the repository root
+ *     published/Projects/Payments/   what kb-publish rendered for the ADO wiki
+ *
+ * Like team-smoke.mjs: a bare repository behind `url.insteadOf`, a local HTTP
+ * server for the GitHub (Enterprise) REST API, the built Host module on a stub
+ * context, and the built CI checker. Checks: the registry drives the project
+ * list (summary, owner, repo, a registered but missing folder, publish
+ * status), a new page is eligible, a change under published/ needs a person,
+ * New project wiki adds a registry row and opens one pull request with both,
+ * and check-pr maps each change through the registry.
+ *
+ * Needs a knowledgeAgent checkout (see team-smoke.mjs). Usage: node scripts/hub-smoke.mjs
+ */
+import { execFileSync, spawnSync } from 'node:child_process'
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
+import { createServer } from 'node:http'
+import { tmpdir } from 'node:os'
+import { dirname, join, resolve } from 'node:path'
+import { fileURLToPath, pathToFileURL } from 'node:url'
+
+const root = dirname(dirname(fileURLToPath(import.meta.url)))
+const fixture = [process.env.WIKI_FIXTURE, join(root, '..', 'knowledgeAgent'), '/home/user/knowledgeAgent']
+  .filter(Boolean).map(path => resolve(path)).find(path => existsSync(join(path, 'okf', 'SCHEMA.md')) && existsSync(join(path, 'scripts', 'okf.py')))
+if (fixture === undefined) {
+  console.error('hub-smoke: no OKF fixture. Set WIKI_FIXTURE to a knowledgeAgent checkout (with okf/ and scripts/okf.py).')
+  process.exit(2)
+}
+const python = process.env.PYTHON ?? (process.platform === 'win32' ? 'python' : 'python3')
+const work = realpathSync.native(mkdtempSync(join(tmpdir(), 'dsh-okf-hub-')))
+const failures = []
+const check = (condition, message) => { if (!condition) failures.push(message) }
+const git = (cwd, ...args) => execFileSync('git', ['-c', 'user.name=smoke', '-c', 'user.email=smoke@example.invalid', '-c', 'init.defaultBranch=main', '-c', 'core.autocrlf=false', ...args], { cwd, encoding: 'utf8' }).trim()
+
+// ── 1 · the hub repository ────────────────────────────────────────────────
+const seed = join(work, 'seed')
+mkdirSync(join(seed, 'scripts'), { recursive: true })
+cpSync(join(fixture, 'okf'), join(seed, 'payments'), { recursive: true })
+cpSync(join(fixture, 'scripts', 'okf.py'), join(seed, 'scripts', 'okf.py'))
+mkdirSync(join(seed, 'published', 'Projects', 'Payments'), { recursive: true })
+writeFileSync(join(seed, 'published', 'Projects', 'Payments.md'), '# Payments\n')
+writeFileSync(join(seed, 'published', 'Projects', 'Payments', 'Overview.md'), '# Overview\n\nRendered by kb-publish.\n')
+writeFileSync(join(seed, 'AGENTS.md'), [
+  '# Team wiki hub', '',
+  'Agents: find a project here, then read its bundle\'s index.md.', '',
+  '## Project registry', '',
+  '| Project | Repo | Summary | Owner | Bundle |',
+  '|---|---|---|---|---|',
+  '| Payments | [payments-service](https://github.acme.com/pay/payments-service) | Card and wallet payments | @alice | `payments/` |',
+  '| Ledger | — | Double-entry ledger | @bob | `ledger/` |',
+  '',
+  '## Rules', '', 'Pages an agent writes are unreviewed until a person reviews them.', '',
+].join('\n'))
+git(seed, 'init', '-q')
+git(seed, 'add', '-A')
+git(seed, 'commit', '-qm', 'seed hub')
+const origin = join(work, 'origin.git')
+git(work, 'clone', '-q', '--bare', seed, origin)
+git(origin, 'symbolic-ref', 'HEAD', 'refs/heads/main')
+
+const URL_ = 'https://github.acme.com/acme/hub'
+process.env.GIT_CONFIG_COUNT = '2'
+process.env.GIT_CONFIG_KEY_0 = `url.${pathToFileURL(origin).href}.insteadOf`
+process.env.GIT_CONFIG_VALUE_0 = URL_
+process.env.GIT_CONFIG_KEY_1 = 'protocol.file.allow'
+process.env.GIT_CONFIG_VALUE_1 = 'always'
+process.env.DSH_OKF_GITHUB_TOKEN = 'smoke-token'
+
+// ── 2 · a stand-in for the GitHub Enterprise REST API (/api/v3) ──────────
+const pulls = []
+const seen = []
+const server = createServer((request, response) => {
+  let body = ''
+  request.on('data', (chunk) => { body += chunk })
+  request.on('end', () => {
+    const url = new URL(request.url ?? '/', 'http://x')
+    seen.push(`${request.method} ${url.pathname}`)
+    const send = (status, value) => { response.writeHead(status, { 'content-type': 'application/json' }); response.end(JSON.stringify(value)) }
+    const base = '/api/v3/repos/acme/hub'
+    const json = body === '' ? {} : JSON.parse(body)
+    const view = pull => ({ number: pull.number, title: pull.title, html_url: `${URL_}/pull/${String(pull.number)}`, draft: false, updated_at: '2026-11-19T08:00:00Z', user: { login: 'dsh-bot' }, head: { ref: pull.head, sha: git(origin, 'rev-parse', `refs/heads/${pull.head}`) }, base: { ref: pull.base }, labels: pull.labels.map(name => ({ name })), state: pull.state, merged: false })
+    if (request.method === 'GET' && url.pathname === `${base}/pulls`) {
+      const head = url.searchParams.get('head')
+      return send(200, pulls.filter(pull => pull.state === 'open' && (head === null || `acme:${pull.head}` === head)).map(view))
+    }
+    if (request.method === 'POST' && url.pathname === `${base}/pulls`) {
+      const pull = { number: pulls.length + 1, title: json.title, body: json.body, head: json.head, base: json.base, labels: [], state: 'open' }
+      pulls.push(pull)
+      git(origin, 'update-ref', `refs/pull/${String(pull.number)}/head`, `refs/heads/${pull.head}`)
+      return send(201, view(pull))
+    }
+    let match = new RegExp(`^${base}/pulls/(\\d+)$`).exec(url.pathname)
+    if (match !== null) {
+      const pull = pulls[Number(match[1]) - 1]
+      if (pull === undefined) return send(404, { message: 'Not Found' })
+      if (request.method === 'PATCH') {
+        Object.assign(pull, { title: json.title, body: json.body })
+        git(origin, 'update-ref', `refs/pull/${String(pull.number)}/head`, `refs/heads/${pull.head}`)
+      }
+      return send(200, view(pull))
+    }
+    match = new RegExp(`^${base}/issues/(\\d+)/labels(?:/(.+))?$`).exec(url.pathname)
+    if (match !== null) {
+      const pull = pulls[Number(match[1]) - 1]
+      if (request.method === 'POST') pull.labels = [...new Set([...pull.labels, ...json.labels])]
+      if (request.method === 'DELETE') {
+        const name = decodeURIComponent(match[2] ?? '')
+        if (!pull.labels.includes(name)) return send(404, { message: 'Label does not exist' })
+        pull.labels = pull.labels.filter(label => label !== name)
+      }
+      return send(200, pull.labels.map(name => ({ name })))
+    }
+    if (request.method === 'GET' && /\/commits\/[^/]+\/check-runs$/.test(url.pathname)) return send(200, { check_runs: [] })
+    return send(404, { message: `no mock for ${request.method} ${url.pathname}` })
+  })
+})
+await new Promise((done) => { server.listen(0, '127.0.0.1', done) })
+const githubApi = `http://127.0.0.1:${String(server.address().port)}/api/v3`
+
+// ── 3 · the Host half ─────────────────────────────────────────────────────
+const host = await import(pathToFileURL(join(root, 'lib', 'index.js')).href)
+const routes = new Map()
+const libraryDir = join(work, 'library')
+host.apply({
+  connection: { fetch: { register: (route) => { routes.set(route.path, route); return async () => {} } } },
+  inject: (_deps, callback) => { callback({ systemPrompt: { context: () => () => {} } }) },
+}, { libraryDir, team: { githubHost: 'github.acme.com', githubApi, python, agentActor: 'dsh/smoke' } })
+
+async function api(path, { method = 'GET', query, body } = {}) {
+  const route = routes.get(path)
+  if (route === undefined) throw new Error(`no route ${path}`)
+  const url = `http://127.0.0.1:3080${path}${query === undefined ? '' : `?${new URLSearchParams(query)}`}`
+  const response = await route.fetch(new Request(url, { method, ...body === undefined ? {} : { body: JSON.stringify(body), headers: { 'content-type': 'application/json' } } }))
+  const text = await response.text()
+  return { status: response.status, body: text === '' ? null : JSON.parse(text) }
+}
+const must = (answer, label) => {
+  if (answer.status !== 200) {
+    console.error(`hub-smoke: ${label} answered ${String(answer.status)} ${JSON.stringify(answer.body)}`)
+    server.close()
+    process.exit(1)
+  }
+  return answer.body
+}
+const checker = (cwd, head) => spawnSync(process.execPath, [join(root, 'lib', 'check-pr.js'), 'origin/main', head], { cwd, encoding: 'utf8', env: { ...process.env, GITHUB_OUTPUT: join(work, 'gh-output') } })
+
+// ── Connect: the registry is the project list ──
+let status = must(await api('/api/okf/team/connect', { method: 'POST', body: { url: URL_ } }), 'connect')
+check(status.team.provider === 'github' && status.team.root === '' && status.hasToken === true, `GHE remote is GitHub: ${JSON.stringify(status.team)}`)
+const [payments, ledger] = status.wikis
+check(status.wikis.length === 2 && payments?.folder === 'payments' && payments.name === 'Payments' && payments.registered === true, `registry projects: ${JSON.stringify(status.wikis)}`)
+check(payments?.summary === 'Card and wallet payments' && payments.owner === '@alice' && payments.repo === 'https://github.acme.com/pay/payments-service' && payments.missing !== true, `registry columns: ${JSON.stringify(payments)}`)
+check(payments?.published?.path === 'published/Projects/Payments' && /^\d{4}-\d{2}-\d{2}$/.test(payments.published.updated ?? ''), `publish status: ${JSON.stringify(payments?.published)}`)
+check(ledger?.folder === 'ledger' && ledger.missing === true && ledger.published === undefined, `registered but missing: ${JSON.stringify(ledger)}`)
+check(!status.wikis.some(wiki => wiki.folder === 'published' || wiki.folder === 'scripts'), 'published/ and scripts/ are not projects')
+
+// ── Maintain Payments: a new page alone is eligible ──
+const maintained = must(await api('/api/okf/team/maintain', { method: 'POST', body: { folder: 'payments' } }), 'maintain')
+const record = maintained.record
+const ws = maintained.workspace
+check(record.wiki === 'payments' && record.wikiName === 'Payments' && maintained.entry.root === join(ws, 'payments') && maintained.entry.team?.project === 'Payments', `maintain: ${JSON.stringify(maintained.entry)}`)
+const today = new Date().toISOString().slice(0, 10)
+writeFileSync(join(ws, 'payments', 'concepts', 'refunds.md'), [
+  '---', 'type: Concept', 'title: Refunds', 'description: How a card payment is refunded.',
+  'status: draft', 'lifecycle: draft', `created: ${today}`, `updated: ${today}`, 'generated:', '  by: dsh/smoke', `  at: ${today}`, 'tags: []', '---', '',
+  '# Refunds', '', 'Refunds go back to the original card. See [the lifecycle](/concepts/knowledge-lifecycle.md).', '',
+].join('\n'))
+let pr = must(await api('/api/okf/team/open-pr', { method: 'POST', body: { id: record.id, title: 'Add refunds' } }), 'open-pr 1')
+check(pr.eligible === true && pr.pr?.number === 1 && pr.files.every(path => path.startsWith('payments/')), `pr 1: ${JSON.stringify(pr)}`)
+check(pulls[0]?.labels.includes('wiki-auto-merge') && seen.some(line => line === 'POST /api/v3/repos/acme/hub/pulls'), `pr 1 on GHE: ${seen.join(' | ')}`)
+const clone = join(work, 'ci')
+git(work, 'clone', '-q', origin, clone)
+git(clone, 'checkout', '-q', record.branch)
+let ci = checker(clone, 'HEAD')
+check(ci.status === 0 && ci.stdout.includes('project wiki: payments') && readFileSync(join(work, 'gh-output'), 'utf8').includes('wiki=payments'), `check-pr via registry: ${ci.status} ${ci.stdout} ${ci.stderr}`)
+
+// ── A change to its published pages goes in the same PR and needs a person ──
+writeFileSync(join(ws, 'published', 'Projects', 'Payments', 'Overview.md'), '# Overview\n\nRendered again by kb-publish, with refunds.\n')
+writeFileSync(join(ws, 'published', 'Projects', 'Other.md'), '# not this project\n')
+pr = must(await api('/api/okf/team/open-pr', { method: 'POST', body: { id: record.id } }), 'open-pr 2')
+check(pr.eligible === false && pr.files.includes('published/Projects/Payments/Overview.md') && !pr.files.includes('published/Projects/Other.md') && pr.reasons.some(reason => reason.includes('published')), `pr 2: ${JSON.stringify(pr)}`)
+check(pr.pr?.reused === true && !pulls[0].labels.includes('wiki-auto-merge'), 'the label comes off')
+git(clone, 'fetch', '-q', 'origin')
+ci = checker(clone, `origin/${record.branch}`)
+check(ci.status === 1 && ci.stdout.includes('project wiki: payments') && ci.stdout.includes('published'), `check-pr published: ${ci.status} ${ci.stdout} ${ci.stderr}`)
+let list = must(await api('/api/okf/team/pulls', { query: { refresh: '1' } }), 'pulls')
+check(list.pulls.length === 1 && list.pulls[0].wikis.join() === 'payments' && list.pulls[0].eligible === false, `pulls: ${JSON.stringify(list.pulls)}`)
+
+// ── New project wiki: a bundle at the root plus a registry row, one PR ──
+const created = must(await api('/api/okf/team/create', { method: 'POST', body: { name: 'Settlement', template: 'copy:payments', repo: 'https://github.acme.com/pay/settlement', owner: '@carol', summary: 'Daily settlement | batches' } }), 'create')
+const nws = created.workspace
+check(created.record.wiki === 'settlement' && created.entry.root === join(nws, 'settlement'), `create: ${JSON.stringify(created.record)}`)
+check(created.prError === undefined && created.pr?.files.includes('AGENTS.md') && created.pr.files.includes('settlement/SCHEMA.md') && created.pr.eligible === false && created.pr.reasons.some(reason => reason.includes('AGENTS.md')), `setup PR: ${JSON.stringify(created.pr ?? created.prError)}`)
+const agents = readFileSync(join(nws, 'AGENTS.md'), 'utf8')
+check(agents.includes('| Settlement | https://github.acme.com/pay/settlement | Daily settlement \\| batches | @carol | `settlement/` |') && agents.indexOf('| Settlement') < agents.indexOf('## Rules'), `registry row: ${agents}`)
+check(git(nws, 'status', '--porcelain') === '', 'nothing left uncommitted')
+answer: {
+  const again = await api('/api/okf/team/create', { method: 'POST', body: { name: 'ledger' } })
+  check(again.status === 409, `a registered name is refused: ${JSON.stringify(again.body)}`)
+}
+git(clone, 'fetch', '-q', 'origin')
+ci = checker(clone, `origin/${created.record.branch}`)
+check(ci.status === 1 && ci.stdout.includes('project wiki: settlement') && ci.stdout.includes('AGENTS.md'), `check-pr new project: ${ci.status} ${ci.stdout} ${ci.stderr}`)
+
+// After merge the registry lists it with its columns.
+git(origin, 'update-ref', 'refs/heads/main', `refs/heads/${created.record.branch}`)
+status = must(await api('/api/okf/team/refresh', { method: 'POST', body: {} }), 'refresh')
+const settlement = status.wikis.find(wiki => wiki.folder === 'settlement')
+check(settlement?.name === 'Settlement' && settlement.owner === '@carol' && settlement.summary === 'Daily settlement | batches' && settlement.published === undefined, `after merge: ${JSON.stringify(status.wikis)}`)
+
+server.close()
+rmSync(work, { recursive: true, force: true })
+if (failures.length > 0) {
+  for (const failure of failures) console.error(`hub-smoke: FAIL — ${failure}`)
+  process.exit(1)
+}
+console.log('hub-smoke: OK')
+console.log(`  fixture        ${fixture}`)
+console.log(`  github calls   ${String(seen.length)}`)
+process.exit(0)

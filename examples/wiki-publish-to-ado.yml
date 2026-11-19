@@ -1,0 +1,68 @@
+# Sync published/Projects/ from the team wiki hub into the Projects/ section of
+# the existing Azure DevOps wiki, after a pull request merges.
+#
+# Copy to .github/workflows/wiki-publish-to-ado.yml in the hub.
+#
+# Only published/Projects/ reaches the Azure DevOps wiki, and only its
+# Projects/ folder is ever written: pages are added, updated and removed there
+# to mirror the hub, and every other page of the wiki (the hand-written ones) is
+# never touched. A missing Projects.md parent page is created once, never
+# overwritten. kb-publish should write ADO wiki file names (spaces as "-") and
+# a .order file per folder if page order matters.
+#
+# Needs, as repository (or organization) settings of the hub:
+#   vars.ADO_WIKI_REPO     the wiki's git URL, e.g.
+#                          https://dev.azure.com/acme/Platform/_git/Platform.wiki
+#   vars.ADO_WIKI_BRANCH   its branch; a project wiki uses wikiMaster (default)
+#   secrets.ADO_WIKI_PAT   an Azure DevOps PAT with Code (Read & write) on that repo
+name: publish to Azure DevOps wiki
+
+on:
+  push:
+    branches: [main]
+    paths: ['published/Projects/**']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ado-wiki-sync
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Clone the Azure DevOps wiki
+        env:
+          ADO_WIKI_PAT: ${{ secrets.ADO_WIKI_PAT }}
+          ADO_WIKI_REPO: ${{ vars.ADO_WIKI_REPO }}
+          ADO_WIKI_BRANCH: ${{ vars.ADO_WIKI_BRANCH || 'wikiMaster' }}
+        run: |
+          header="Authorization: Basic $(printf ':%s' "$ADO_WIKI_PAT" | base64 -w0)"
+          git -c http.extraHeader="$header" clone --quiet --branch "$ADO_WIKI_BRANCH" "$ADO_WIKI_REPO" "$RUNNER_TEMP/wiki"
+      - name: Mirror published/Projects/ into Projects/ only
+        run: |
+          mkdir -p "$RUNNER_TEMP/wiki/Projects"
+          rsync -a --delete --exclude '.git' published/Projects/ "$RUNNER_TEMP/wiki/Projects/"
+          if [ ! -f "$RUNNER_TEMP/wiki/Projects.md" ]; then
+            printf '# Projects\n\nPages in this section are generated from the team wiki hub. Edit them there, not here.\n' > "$RUNNER_TEMP/wiki/Projects.md"
+          fi
+      - name: Commit and push
+        env:
+          ADO_WIKI_PAT: ${{ secrets.ADO_WIKI_PAT }}
+          ADO_WIKI_BRANCH: ${{ vars.ADO_WIKI_BRANCH || 'wikiMaster' }}
+        working-directory: ${{ runner.temp }}/wiki
+        run: |
+          git add -A -- Projects Projects.md
+          # Anything staged outside Projects/ means the mirror went wrong: stop.
+          if git diff --cached --name-only | grep -v -e '^Projects/' -e '^Projects\.md$'; then
+            echo "refusing to change pages outside Projects/"; exit 1
+          fi
+          if git diff --cached --quiet; then echo "wiki already up to date"; exit 0; fi
+          git -c user.name="team-wiki sync" -c user.email="team-wiki-sync@users.noreply.github.com" \
+            commit --quiet -m "Sync Projects/ from ${GITHUB_REPOSITORY}@${GITHUB_SHA::12}"
+          header="Authorization: Basic $(printf ':%s' "$ADO_WIKI_PAT" | base64 -w0)"
+          git -c http.extraHeader="$header" push --quiet origin "HEAD:$ADO_WIKI_BRANCH"

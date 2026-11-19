@@ -152,7 +152,8 @@ check(answer.status === 409 && answer.body.error.code === 'no-team', 'pull reque
 answer = await api('/api/okf/team/connect', { method: 'POST', body: { url: 'https://user:pw@github.com/acme/team-wiki' } })
 check(answer.status === 400 && answer.body.error.code === 'bad-url', 'a URL with a credential is refused')
 
-let status = must(await api('/api/okf/team/connect', { method: 'POST', body: { url: URL_ } }), 'connect')
+// The older layout: project wikis under okf/, no AGENTS.md registry.
+let status = must(await api('/api/okf/team/connect', { method: 'POST', body: { url: URL_, root: 'okf' } }), 'connect')
 check(status.team.name === 'github.com/acme/team-wiki' && status.team.root === 'okf' && status.baseBranch === 'main' && status.hasToken === true, `connected: ${JSON.stringify(status.team)}`)
 check(status.wikis.length === 1 && status.wikis[0].folder === 'okf/payments' && status.wikis[0].name === 'Payments', `one project wiki: ${JSON.stringify(status.wikis)}`)
 const stats = status.wikis[0].stats
@@ -255,7 +256,7 @@ const created = must(await api('/api/okf/team/create', { method: 'POST', body: {
 const nws = created.workspace
 check(created.record.isNew === true && /^wiki\/new-settlement-[0-9a-f]{4}$/.test(created.record.branch) && created.record.wiki === 'okf/settlement' && created.entry.root === join(nws, 'okf', 'settlement'), `create: ${JSON.stringify(created.record)}`)
 check(created.prError === undefined && created.pr?.pr?.number === 2 && created.pr.eligible === false && created.pr.reasons.some(reason => reason.includes('SCHEMA.md')), `setup PR: ${JSON.stringify(created.pr ?? created.prError)}`)
-check(created.pr.files.every(path => path.startsWith('okf/settlement/')) && created.pr.files.includes('okf/settlement/SCHEMA.md') && created.pr.files.includes('okf/settlement/index.md'), `setup files: ${created.pr.files.join(', ')}`)
+check(created.pr.files.every(path => path.startsWith('okf/settlement/') || path === 'AGENTS.md') && /\| Payments \|.*`okf\/payments\/` \|\n\| Settlement Wiki \|.*`okf\/settlement\/` \|/.test(readFileSync(join(created.workspace, 'AGENTS.md'), 'utf8')) && created.pr.files.includes('okf/settlement/SCHEMA.md') && created.pr.files.includes('okf/settlement/index.md'), `setup files: ${created.pr.files.join(', ')}`)
 check(/^wiki_name: "Settlement Wiki"$/m.test(readFileSync(join(nws, 'okf', 'settlement', 'SCHEMA.md'), 'utf8')), 'SCHEMA.md carries the wiki name')
 check(git(nws, 'status', '--porcelain') === '', 'okf.py init leaves nothing outside the new wiki')
 status = must(await api('/api/okf/team'), 'status 2')

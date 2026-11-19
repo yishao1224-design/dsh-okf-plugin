@@ -215,7 +215,7 @@ export interface OkfStore {
   loadWiki(folder: string): Promise<void>
   loadPulls(force?: boolean): Promise<void>
   /** Create a project wiki, then open a session in its new workspace. */
-  createWiki(request: { name: string, folder?: string, template?: string }): Promise<OpenOutcome>
+  createWiki(request: { name: string, folder?: string, template?: string, repo?: string, owner?: string, summary?: string }): Promise<OpenOutcome>
   /** Open (or make) the project wiki's maintenance workspace and a session there. */
   maintainWiki(folder: string): Promise<OpenOutcome>
   loadChanges(maintainId: string): Promise<void>

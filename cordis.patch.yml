@@ -17,7 +17,7 @@
 #       promptContext: true   # tell the model which bundle the session uses
 #       team:                 # Team Wiki sidebar page (all optional)
 #         url: 'https://github.com/acme/team-wiki'   # connect this repo when none is connected
-#         root: okf           # folder holding the project wikis
+#         root: ""            # where to look for bundles when AGENTS.md has no registry (blank = repo root)
 #         python: python      # runs the repo's scripts/okf.py
 #         autoMergeLabel: wiki-auto-merge
 - insert:

@@ -51,7 +51,7 @@ export interface LibraryEntry {
    */
   readonly workspace?: string
   /** Set on an entry the Team Wiki page made for a maintenance workspace. */
-  readonly team?: { readonly maintainId: string, readonly wiki: string }
+  readonly team?: { readonly maintainId: string, readonly wiki: string, readonly project?: string }
 }
 
 /** One page of a bundle as the catalog lists it. */
@@ -193,7 +193,7 @@ export interface TeamConfig {
   readonly provider: GitProvider
   /** Base branch; undefined follows the remote's default branch. */
   readonly ref?: string
-  /** Repository-relative folder holding the project wikis. */
+  /** Where to look for project wikis when the hub has no AGENTS.md registry; '' is the repository root. */
   readonly root: string
   /** Display name, e.g. `github.com/acme/team-wiki`. */
   readonly name: string
@@ -214,6 +214,16 @@ export interface ProjectWiki {
   /** Repository-relative folder, e.g. `okf/payments`. Also its id. */
   readonly folder: string
   readonly name: string
+  /** Listed in the hub's AGENTS.md registry (else found by its SCHEMA.md). */
+  readonly registered: boolean
+  /** From the registry: the project's code repository, summary and owner. */
+  readonly repo?: string
+  readonly summary?: string
+  readonly owner?: string
+  /** Registered, but its bundle folder is not on the base branch. */
+  readonly missing?: boolean
+  /** `published/Projects/<name>/` on the base branch, and when it last changed. */
+  readonly published?: { readonly path: string, readonly updated?: string }
   readonly stats: WikiStats
   /** The open maintenance workspace for it, if any. */
   readonly maintainId?: string

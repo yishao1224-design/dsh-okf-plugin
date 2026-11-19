@@ -123,7 +123,7 @@ function PageHeader({ t, repo, branch, children }: { readonly t: T, readonly rep
 function ConnectForm({ store, t, current, onDone, onCancel }: { readonly store: OkfStore, readonly t: T, readonly current: TeamStatus['team'], readonly onDone: () => void, readonly onCancel: (() => void) | undefined }): ReactNode {
   const [url, setUrl] = useState(current?.url ?? '')
   const [ref, setRef] = useState(current?.ref ?? '')
-  const [root, setRoot] = useState(current?.root ?? 'okf')
+  const [root, setRoot] = useState(current?.root ?? '')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | undefined>(undefined)
   const submit = (): void => {
@@ -146,7 +146,7 @@ function ConnectForm({ store, t, current, onDone, onCancel }: { readonly store: 
       <label style={st('label')} htmlFor="okf-team-ref">{t('team.branch')}</label>
       <input id="okf-team-ref" style={st('input')} value={ref} placeholder="main" onChange={(event) => { setRef(event.target.value) }} />
       <label style={st('label')} htmlFor="okf-team-root">{t('team.root')}</label>
-      <input id="okf-team-root" style={st('input')} value={root} onChange={(event) => { setRoot(event.target.value) }} />
+      <input id="okf-team-root" style={st('input')} value={root} placeholder={t('team.rootPlaceholder')} onChange={(event) => { setRoot(event.target.value) }} />
       <p style={st('note')}>{t('add.auth')}</p>
       {error !== undefined && <div style={st('error')}>{error}</div>}
       <div style={{ ...st('row'), marginTop: 10 }}>
@@ -200,9 +200,10 @@ function WikisTab({ store, state, data, t, onCreate }: { readonly store: OkfStor
                 <span>{wiki.name}</span>
                 {wiki.maintainId !== undefined && <span style={sx('badge', 'badgeBrand')}>{t('team.beingMaintained')}</span>}
               </div>
-              <div style={st('twMono')}>{wiki.folder}</div>
+              <div style={st('twMono')}>{wiki.folder}/{wiki.owner === undefined ? '' : ` · ${wiki.owner}`}</div>
+              {wiki.summary !== undefined && <div style={{ ...st('twMeta'), overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={wiki.summary}>{wiki.summary}</div>}
               <div style={st('twMeta')}>
-                {t('team.cardMeta', { pages: wiki.stats.pages, unreviewed: wiki.stats.unreviewed })}
+                {wiki.missing === true ? t('team.missing') : t('team.cardMeta', { pages: wiki.stats.pages, unreviewed: wiki.stats.unreviewed })}
                 {open > 0 && ` · ${t('team.cardPrs', { count: open })}`}
               </div>
             </button>
@@ -266,7 +267,18 @@ function WikiDetailPane({ store, state, data, wiki, t }: { readonly store: OkfSt
       <div style={st('twDetailHead')}>
         <div style={{ flex: '1 1 240px', minWidth: 0 }}>
           <h2 style={st('twDetailName')}>{wiki.name}</h2>
-          <div style={st('twMono')}>{wiki.folder}</div>
+          <div style={st('twMono')}>{wiki.folder}/</div>
+          {wiki.summary !== undefined && <div style={{ ...st('twMeta'), marginTop: 4 }}>{wiki.summary}</div>}
+          <div style={{ ...st('note'), marginTop: 4 }}>
+            {wiki.owner !== undefined && <span>{t('team.owner', { owner: wiki.owner })} · </span>}
+            {wiki.repo !== undefined && (/^https?:\/\//.test(wiki.repo)
+              ? <><a style={st('twLink')} href={wiki.repo} target="_blank" rel="noreferrer">{t('team.codeRepo')}</a> · </>
+              : <span>{wiki.repo} · </span>)}
+            {wiki.published === undefined
+              ? <span>{t('team.notPublished')}</span>
+              : <span title={wiki.published.path}>{wiki.published.updated === undefined ? t('team.published') : t('team.publishedAt', { at: wiki.published.updated })}</span>}
+            {!wiki.registered && <span> · {t('team.notRegistered')}</span>}
+          </div>
           {record !== undefined && (
             <div style={{ ...st('note'), marginTop: 4 }}>
               {t('team.maintaining', { branch: record.branch })}
@@ -275,10 +287,10 @@ function WikiDetailPane({ store, state, data, wiki, t }: { readonly store: OkfSt
           )}
         </div>
         <div style={st('row')}>
-          <Button variant="primary" disabled={busy !== undefined} title={t('team.maintainHint')} onClick={maintain}>
+          <Button variant="primary" disabled={busy !== undefined || wiki.missing === true} title={t('team.maintainHint')} onClick={maintain}>
             {busy === 'maintain' ? t('team.opening') : record === undefined ? t('team.maintain') : t('team.maintainOpen')}
           </Button>
-          <Button disabled={busy !== undefined} title={t('team.previewHint')} onClick={preview}>{busy === 'preview' ? t('preview.loading') : t('team.preview')}</Button>
+          <Button disabled={busy !== undefined || wiki.missing === true} title={t('team.previewHint')} onClick={preview}>{busy === 'preview' ? t('preview.loading') : t('team.preview')}</Button>
         </div>
       </div>
       {error !== undefined && <div style={{ ...st('error'), marginBottom: 12 }}>{error}</div>}
@@ -298,7 +310,60 @@ function WikiDetailPane({ store, state, data, wiki, t }: { readonly store: OkfSt
       {tab !== 'pulls' && detail?.data === undefined && detail?.status !== 'failed' && <div style={st('empty')}>{t('preview.loading')}</div>}
       {tab === 'pages' && detail?.data !== undefined && <PageList pages={pages} t={t} empty={t('team.noPages')} />}
       {tab === 'review' && detail?.data !== undefined && <PageList pages={needsReview} t={t} empty={t('team.noReview')} />}
+      {data.team !== undefined && <Pointer hub={data.team.url} wiki={wiki} t={t} />}
     </div>
+  )
+}
+
+/**
+ * A browsable URL for a git remote.
+ * @param url - https or scp-style ssh.
+ * @returns the web URL.
+ */
+export function webUrl(url: string): string {
+  const scp = /^[\w.-]+@([\w.-]+):(.+)$/.exec(url.trim())
+  const https = scp !== null && !url.includes('://') ? `https://${scp[1] ?? ''}/${scp[2] ?? ''}` : url.trim().replace(/^ssh:\/\/[^@/]+@/, 'https://').replace(/\/\/[^@/]+@/, '//')
+  return https.replace(/\.git$/, '').replace(/\/$/, '')
+}
+
+/**
+ * The lines a project's code repository puts in its own AGENTS.md so agents
+ * there find its bundle in the hub.
+ * @param hub - the hub's remote.
+ * @param wiki - the project.
+ * @returns markdown.
+ */
+export function pointerText(hub: string, wiki: Pick<ProjectWiki, 'name' | 'folder'>): string {
+  const url = webUrl(hub)
+  return [
+    '## Team wiki',
+    '',
+    `Knowledge about this project lives in the team wiki hub ${url}, in the OKF bundle \`${wiki.folder}/\` (registered in its AGENTS.md as "${wiki.name}").`,
+    '',
+    `- Before answering questions about this project's architecture, access or conventions, read \`${wiki.folder}/index.md\` in the hub and the pages it lists.`,
+    '- To add or correct knowledge, run kb-ingest against the hub; it opens a pull request there. Do not copy wiki pages into this repository.',
+    '',
+  ].join('\n')
+}
+
+/**
+ * The AGENTS.md pointer for the project's code repository, with Copy.
+ * @param props - hub remote and project.
+ * @returns the section.
+ */
+function Pointer({ hub, wiki, t }: { readonly hub: string, readonly wiki: ProjectWiki, readonly t: T }): ReactNode {
+  const [copied, setCopied] = useState(false)
+  const text = pointerText(hub, wiki)
+  const copy = (): void => {
+    void navigator.clipboard?.writeText(text).then(() => { setCopied(true) }, () => { setCopied(false) })
+  }
+  return (
+    <details style={{ marginTop: 18 }}>
+      <summary style={{ cursor: 'pointer', fontWeight: 500 }}>{t('team.pointerTitle')}</summary>
+      <p style={st('note')}>{t('team.pointerHint')}</p>
+      <pre style={{ ...st('mdPre'), whiteSpace: 'pre-wrap', marginTop: 6 }}>{text}</pre>
+      <Button onClick={copy}>{copied ? t('team.copied') : t('team.copy')}</Button>
+    </details>
   )
 }
 
@@ -469,6 +534,9 @@ function NewWikiDialog({ store, data, t, onClose }: { readonly store: OkfStore, 
   const [name, setName] = useState('')
   const [folder, setFolder] = useState('')
   const [folderTouched, setFolderTouched] = useState(false)
+  const [repo, setRepo] = useState('')
+  const [owner, setOwner] = useState('')
+  const [summary, setSummary] = useState('')
   const firstWiki = data.wikis[0]?.folder
   const [template, setTemplate] = useState(firstWiki === undefined ? 'default' : `copy:${firstWiki}`)
   const [busy, setBusy] = useState(false)
@@ -479,7 +547,7 @@ function NewWikiDialog({ store, data, t, onClose }: { readonly store: OkfStore, 
   const submit = (): void => {
     setBusy(true)
     setError(undefined)
-    store.createWiki({ name: name.trim(), folder: shownFolder, template }).then((outcome) => {
+    store.createWiki({ name: name.trim(), folder: shownFolder, template, ...repo.trim() === '' ? {} : { repo: repo.trim() }, ...owner.trim() === '' ? {} : { owner: owner.trim() }, ...summary.trim() === '' ? {} : { summary: summary.trim() } }).then((outcome) => {
       setBusy(false)
       const prText = outcome.answer.pr?.pr !== undefined
         ? t('team.createdPr', { number: outcome.answer.pr.pr.number })
@@ -505,6 +573,18 @@ function NewWikiDialog({ store, data, t, onClose }: { readonly store: OkfStore, 
           <label style={st('label')} htmlFor="okf-new-folder">{t('team.newFolder')}</label>
           <input id="okf-new-folder" style={{ ...st('input'), fontFamily: 'ui-monospace, monospace' }} value={shownFolder} onChange={(event) => { setFolderTouched(true); setFolder(event.target.value) }} />
           <div style={st('note')}>{t('team.newWhere', { repo: data.team?.name ?? '', path })}</div>
+          <label style={st('label')} htmlFor="okf-new-repo">{t('team.newRepo')}</label>
+          <input id="okf-new-repo" style={st('input')} value={repo} placeholder="https://github.acme.com/payments/payments-service" onChange={(event) => { setRepo(event.target.value) }} />
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 10 }}>
+            <div>
+              <label style={st('label')} htmlFor="okf-new-owner">{t('team.newOwner')}</label>
+              <input id="okf-new-owner" style={st('input')} value={owner} placeholder="@alice" onChange={(event) => { setOwner(event.target.value) }} />
+            </div>
+            <div>
+              <label style={st('label')} htmlFor="okf-new-summary">{t('team.newSummary')}</label>
+              <input id="okf-new-summary" style={st('input')} value={summary} onChange={(event) => { setSummary(event.target.value) }} />
+            </div>
+          </div>
           <label style={st('label')} htmlFor="okf-new-template">{t('team.newTemplate')}</label>
           <select id="okf-new-template" style={{ ...st('select'), maxWidth: '100%' }} value={template} onChange={(event) => { setTemplate(event.target.value) }}>
             {data.wikis.map(wiki => <option key={wiki.folder} value={`copy:${wiki.folder}`}>{t('team.templateCopy', { name: wiki.name })}</option>)}

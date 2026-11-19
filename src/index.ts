@@ -63,15 +63,15 @@ export interface TeamConfigRow {
   readonly url?: string
   /** Its base branch. Default: the remote's default branch. */
   readonly ref?: string
-  /** The folder holding the project wikis. Default `okf`. */
+  /** Where to look for project wikis when the hub has no AGENTS.md registry. Default: the repository root. */
   readonly root?: string
   /** The Python executable that runs okf.py. Default `python` on Windows, else `python3`. */
   readonly python?: string
   /** The toolchain, relative to the repository. Default `scripts/okf.py`. */
   readonly okfScript?: string
-  /** GitHub host name. Default `github.com`. */
+  /** GitHub host name; set it for GitHub Enterprise Server, e.g. `github.acme.com`. Default `github.com`. */
   readonly githubHost?: string
-  /** GitHub REST base URL. Default `https://api.github.com`. */
+  /** GitHub REST base URL. Default `https://api.github.com`, or `https://<githubHost>/api/v3` for an Enterprise host. */
   readonly githubApi?: string
   /** Label set on pull requests eligible for auto-merge; `''` sets none. Default `wiki-auto-merge`. */
   readonly autoMergeLabel?: string
@@ -305,7 +305,7 @@ export const handlers: Readonly<Record<string, { methods: readonly ('GET' | 'POS
     methods: ['POST'],
     handle: route(['POST'], async (request, { team }) => {
       const record = await body(request)
-      return json(await team.create({ name: required(record, 'name'), ...optionalFields(record, ['folder', 'template']) }))
+      return json(await team.create({ name: required(record, 'name'), ...optionalFields(record, ['folder', 'template', 'repo', 'owner', 'summary']) }))
     }),
   },
   [ROUTES.teamMaintain]: {
@@ -391,7 +391,8 @@ export function apply(ctx: HostContext, config: Config | null | undefined = {}):
     python: teamRow.python ?? (process.platform === 'win32' ? 'python' : 'python3'),
     okfScript: teamRow.okfScript ?? 'scripts/okf.py',
     githubHost: teamRow.githubHost ?? 'github.com',
-    githubApi: teamRow.githubApi ?? 'https://api.github.com',
+    // GitHub Enterprise Server serves its REST API under /api/v3 on its own host.
+    githubApi: teamRow.githubApi ?? ((teamRow.githubHost ?? 'github.com') === 'github.com' ? 'https://api.github.com' : `https://${teamRow.githubHost ?? ''}/api/v3`),
     autoMergeLabel: teamRow.autoMergeLabel ?? 'wiki-auto-merge',
     agentActor: teamRow.agentActor ?? 'dsh/agent',
     commitAuthor: teamRow.commitAuthor ?? 'DSH Wiki <dsh-wiki@users.noreply.github.com>',

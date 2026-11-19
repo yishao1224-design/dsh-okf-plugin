@@ -10,6 +10,10 @@
  * - `index.md` / `log.md` (maintained by the toolchain);
  * - a new file under `sources/` (captures are append-only).
  *
+ * In a team wiki hub, `published/` (pages rendered for people and synced to
+ * the Azure DevOps wiki) and `AGENTS.md` (the project registry) always need a
+ * person too.
+ *
  * Anything else needs a person: editing a reviewed page (it resets to
  * unreviewed, which a person should see), deleting a page, touching
  * `SCHEMA.md`, `archive/`, an existing capture, or anything outside the bundle,
@@ -61,6 +65,14 @@ export function judge(bundleDir: string, files: readonly ChangedFile[]): Verdict
   const pages: PageChange[] = []
   if (files.length === 0) reasons.push('the change is empty')
   for (const file of files) {
+    if (file.path.startsWith('published/')) {
+      reasons.push(`changes the published page ${file.path}; pages published for people are reviewed by a person`)
+      continue
+    }
+    if (file.path === 'AGENTS.md') {
+      reasons.push('changes AGENTS.md, the project registry')
+      continue
+    }
     if (!file.path.startsWith(prefix)) {
       reasons.push(`changes ${file.path}, which is outside the wiki`)
       continue

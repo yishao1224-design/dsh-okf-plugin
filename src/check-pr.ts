@@ -3,12 +3,15 @@
  *
  * Runs in the wiki repository's workflow (examples/wiki-auto-merge.yml):
  *
- *     node check-pr.js <base-ref> [head-ref=HEAD] [wiki-root=okf]
+ *     node check-pr.js <base-ref> [head-ref=HEAD] [wiki-root]
  *
- * `wiki-root` is the folder holding the project wikis. The project wiki a
- * change belongs to is the folder directly under it that holds a SCHEMA.md
- * (on either side of the change), or the root itself when it is a bundle.
- * A pull request must touch exactly one project wiki.
+ * The project a change belongs to comes from the hub's AGENTS.md registry
+ * (its Bundle column; `published/Projects/<Project>/` belongs to that project
+ * too), on either side of the change. Without a registry, it is the folder
+ * directly under `wiki-root` (default: the repository root) that holds a
+ * SCHEMA.md, or `wiki-root` itself when it is a bundle. A pull request must
+ * touch exactly one project. Changes to `published/` and `AGENTS.md` always
+ * need a person.
  *
  * Exit 0: eligible (only unreviewed pages, new captures, index.md/log.md).
  * Exit 1: needs a person; the reasons are printed. Exit 2: usage or git error.
@@ -20,11 +23,12 @@ import { execFileSync } from 'node:child_process'
 import { appendFileSync } from 'node:fs'
 import { judge } from './host/eligibility.ts'
 import type { ChangedFile } from './host/eligibility.ts'
+import { parseRegistry } from './host/registry.ts'
 import { describeReview } from './host/review.ts'
 
-const [baseRef, headRef = 'HEAD', rootArg = 'okf'] = process.argv.slice(2)
+const [baseRef, headRef = 'HEAD', rootArg = ''] = process.argv.slice(2)
 if (baseRef === undefined) {
-  console.error('usage: node check-pr.js <base-ref> [head-ref=HEAD] [wiki-root=okf]')
+  console.error('usage: node check-pr.js <base-ref> [head-ref=HEAD] [wiki-root]')
   process.exit(2)
 }
 const root = rootArg.replace(/\\/g, '/').replace(/^\.\/|\/$/g, '')
@@ -84,21 +88,31 @@ try {
 
   const refs = [mergeBase, headRef]
   const prefix = root === '' ? '' : `${root}/`
-  const rootIsWiki = existsAt(refs, `${prefix}SCHEMA.md`)
+  // The hub's AGENTS.md registry names each project's bundle folder (either side of the change).
+  const registry = [...parseRegistry(show(mergeBase, 'AGENTS.md') ?? '')?.entries ?? [], ...parseRegistry(show(headRef, 'AGENTS.md') ?? '')?.entries ?? []]
+  const added = files.filter(file => file.status === 'added' && file.path.endsWith('/SCHEMA.md')).map(file => file.path.slice(0, -'/SCHEMA.md'.length))
+  const rootIsWiki = registry.length === 0 && existsAt(refs, `${prefix}SCHEMA.md`)
+  const slug = (value: string): string => value.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '')
   const wikiOf = (path: string): string | undefined => {
+    const published = /^published\/Projects\/([^/]+)\//.exec(path)
+    if (published !== null) return registry.find(entry => entry.project === published[1] || slug(entry.project) === slug(published[1] ?? ''))?.bundle
+    const folders = [...registry.map(entry => entry.bundle), ...added].sort((a, b) => b.length - a.length)
+    const match = folders.find(folder => path.startsWith(`${folder}/`))
+    if (match !== undefined || registry.length > 0) return match
+    // No registry: a folder directly under the root holding a SCHEMA.md, or the root itself.
     if (!path.startsWith(prefix)) return undefined
     const first = path.slice(prefix.length).split('/')
     if (first.length > 1 && existsAt(refs, `${prefix}${first[0] ?? ''}/SCHEMA.md`)) return `${prefix}${first[0] ?? ''}`
     return rootIsWiki ? root : undefined
   }
   const wikis = [...new Set(files.map(file => wikiOf(file.path)).filter((wiki): wiki is string => wiki !== undefined))]
-  const wiki = wikis.length === 1 ? wikis[0] ?? root : root
+  const wiki = wikis.length === 1 ? wikis[0] ?? '' : ''
   if (process.env.GITHUB_OUTPUT !== undefined && process.env.GITHUB_OUTPUT !== '') appendFileSync(process.env.GITHUB_OUTPUT, `wiki=${wiki}\n`)
 
   const verdict = judge(wiki, files)
   if (wikis.length === 0) verdict.reasons.push(`touches no project wiki under ${root || 'the repository root'}`)
   if (wikis.length > 1) verdict.reasons.push(`touches ${String(wikis.length)} project wikis: ${wikis.join(', ')}`)
-  console.log(`project wiki: ${wiki}`)
+  console.log(`project wiki: ${wiki || '(none)'}`)
   for (const page of verdict.pages) {
     console.log(`${page.status.padEnd(8)} ${page.path}  [${page.before === undefined ? 'new' : describeReview(page.before)} → ${page.after === undefined ? 'deleted' : describeReview(page.after)}]`)
   }
