@@ -50,6 +50,8 @@ export interface LibraryEntry {
    * because DSH's sandbox confines writes to the session workspace.
    */
   readonly workspace?: string
+  /** Set on an entry the Team Wiki page made for a maintenance workspace. */
+  readonly team?: { readonly maintainId: string, readonly wiki: string }
 }
 
 /** One page of a bundle as the catalog lists it. */
@@ -159,6 +161,16 @@ export const ROUTES = {
   page: `${API_BASE}/page`,
   /** GET `?sessionId=`: the selection, or null. POST `{ sessionId, bundleId|null }`: set or clear it. */
   session: `${API_BASE}/session`,
+  team: `${API_BASE}/team`,
+  teamConnect: `${API_BASE}/team/connect`,
+  teamRefresh: `${API_BASE}/team/refresh`,
+  teamWiki: `${API_BASE}/team/wiki`,
+  teamPulls: `${API_BASE}/team/pulls`,
+  teamCreate: `${API_BASE}/team/create`,
+  teamMaintain: `${API_BASE}/team/maintain`,
+  teamChanges: `${API_BASE}/team/changes`,
+  teamOpenPr: `${API_BASE}/team/open-pr`,
+  teamAttach: `${API_BASE}/team/attach`,
 } as const
 
 /**
@@ -168,4 +180,160 @@ export const ROUTES = {
  */
 export function relative(route: string): string {
   return route.replace(/^\//, '')
+}
+
+// ── Team Wiki ────────────────────────────────────────────────────────────────
+
+/**
+ * The team wiki repository: one git repository whose wiki folder (default
+ * `okf`) holds the project wikis, each a folder with its own SCHEMA.md.
+ */
+export interface TeamConfig {
+  readonly url: string
+  readonly provider: GitProvider
+  /** Base branch; undefined follows the remote's default branch. */
+  readonly ref?: string
+  /** Repository-relative folder holding the project wikis. */
+  readonly root: string
+  /** Display name, e.g. `github.com/acme/team-wiki`. */
+  readonly name: string
+  readonly connectedAt: string
+}
+
+/** Review counts of one project wiki. */
+export interface WikiStats {
+  readonly pages: number
+  readonly reviewed: number
+  readonly unreviewed: number
+  /** `needs_review`, or `stale_after` in the past. */
+  readonly overdue: number
+}
+
+/** One project wiki in the team repository. */
+export interface ProjectWiki {
+  /** Repository-relative folder, e.g. `okf/payments`. Also its id. */
+  readonly folder: string
+  readonly name: string
+  readonly stats: WikiStats
+  /** The open maintenance workspace for it, if any. */
+  readonly maintainId?: string
+}
+
+/** A page of a project wiki, with its review state. */
+export interface WikiPage {
+  /** Bundle-relative path. */
+  readonly path: string
+  readonly title: string
+  readonly type?: string
+  readonly lifecycle?: string
+  readonly review: 'reviewed' | 'unreviewed'
+  readonly reviewer?: string
+  readonly reviewedAt?: string
+  readonly generatedBy?: string
+  readonly generatedAt?: string
+  readonly staleAfter?: string
+  readonly overdue: boolean
+}
+
+/** A maintenance workspace: its own clone of the team repository on a wiki branch. */
+export interface MaintainRecord {
+  readonly id: string
+  readonly wiki: string
+  readonly wikiName: string
+  readonly branch: string
+  /** Host folder of the clone; registered as the DSH Workspace. */
+  readonly workspace: string
+  /** The library entry the session selects. */
+  readonly entryId: string
+  readonly createdAt: string
+  /** Made by New project wiki. */
+  readonly isNew?: boolean
+  readonly pr?: { readonly number: number, readonly url: string }
+  /** Its pull request merged or closed; Maintain makes a fresh workspace. */
+  readonly closed?: 'merged' | 'closed'
+}
+
+/** What the Team Wiki page shows. */
+export interface TeamStatus {
+  readonly team?: TeamConfig
+  readonly commit?: string
+  readonly refreshedAt?: string
+  readonly baseBranch?: string
+  readonly wikis: readonly ProjectWiki[]
+  readonly maintains: readonly MaintainRecord[]
+  /** Whether a token for the remote is set (pull requests need one). */
+  readonly hasToken: boolean
+}
+
+/** One project wiki in detail. */
+export interface WikiDetail {
+  readonly wiki: ProjectWiki
+  readonly pages: readonly WikiPage[]
+}
+
+/** How an open pull request stands. */
+export interface PullView {
+  readonly number: number
+  readonly title: string
+  readonly url: string
+  readonly author: string
+  readonly draft: boolean
+  readonly branch: string
+  readonly updatedAt: string
+  readonly labels: readonly string[]
+  /** Project wiki folders it touches. */
+  readonly wikis: readonly string[]
+  readonly checks: 'success' | 'failure' | 'pending' | 'none' | 'unknown'
+  /** Only unreviewed pages, new captures, index.md and log.md; recomputed from git here. */
+  readonly eligible: boolean
+  readonly reasons: readonly string[]
+  readonly files: number
+  /** The maintenance workspace that opened it, if it was opened here. */
+  readonly maintainId?: string
+}
+
+/** The pull request list. */
+export interface PullsAnswer {
+  readonly pulls: readonly PullView[]
+  readonly at: string
+  /** Why the list is empty or partial, e.g. not a GitHub remote. */
+  readonly note?: string
+}
+
+/** A changed file in a maintenance workspace. */
+export interface ChangedPage {
+  readonly path: string
+  readonly status: 'added' | 'modified' | 'deleted'
+  readonly review?: 'reviewed' | 'unreviewed'
+}
+
+/** What a maintenance workspace holds that the base branch does not. */
+export interface ChangesAnswer {
+  readonly record: MaintainRecord
+  readonly files: readonly ChangedPage[]
+  readonly uncommitted: number
+}
+
+/** The answer of Maintain and New project wiki: open this workspace with this entry. */
+export interface MaintainAnswer {
+  readonly record: MaintainRecord
+  readonly entry: LibraryEntry
+  readonly workspace: string
+  readonly created: boolean
+  /** New project wiki opens its first pull request right away; this says how that went. */
+  readonly pr?: OpenPrAnswer
+  readonly prError?: string
+}
+
+/** What Open pull request did. */
+export interface OpenPrAnswer {
+  readonly branch: string
+  readonly commit: string
+  readonly files: readonly string[]
+  readonly eligible: boolean
+  readonly reasons: readonly string[]
+  readonly pushed: boolean
+  readonly pr?: { readonly number: number, readonly url: string, readonly reused: boolean }
+  readonly stamped: readonly string[]
+  readonly notes: readonly string[]
 }

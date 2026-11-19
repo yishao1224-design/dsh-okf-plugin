@@ -27,7 +27,7 @@ type T = Translate<OkfKey>
  * @param store - the store.
  * @returns the current state, re-rendering on change.
  */
-function useOkf(store: OkfStore): OkfState {
+export function useOkf(store: OkfStore): OkfState {
   const subscribe = useCallback((listener: () => void) => store.subscribe(listener), [store])
   const get = useCallback(() => store.getSnapshot(), [store])
   return useSyncExternalStore(subscribe, get, get)
@@ -39,7 +39,7 @@ interface ButtonProps {
   readonly children: ReactNode
   readonly variant?: 'primary' | 'danger' | undefined
   readonly disabled?: boolean
-  readonly title?: string
+  readonly title?: string | undefined
   readonly style?: CSSProperties
   readonly type?: 'button' | 'submit'
   readonly ariaLabel?: string
@@ -83,7 +83,7 @@ export function Button({ onClick, children, variant, disabled = false, title, st
  * A small book glyph.
  * @returns the icon.
  */
-function BookIcon(): ReactNode {
+export function BookIcon(): ReactNode {
   return (
     <svg width="13" height="13" viewBox="0 0 16 16" aria-hidden="true" style={{ flex: 'none' }}>
       <path d="M2.5 2.5h4a2 2 0 0 1 2 2v9a1.5 1.5 0 0 0-1.5-1.5h-4.5zM13.5 2.5h-4a2 2 0 0 0-2 2v9a1.5 1.5 0 0 1 1.5-1.5h4.5z" fill="none" stroke="currentColor" strokeWidth="1.2" strokeLinejoin="round" />

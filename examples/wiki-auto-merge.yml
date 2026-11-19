@@ -1,0 +1,53 @@
+# Auto-merge for agent wiki pull requests.
+#
+# Copy to .github/workflows/wiki-auto-merge.yml in the wiki repository, and
+# lib/check-pr.js from this plugin (dsh-okf) to .github/wiki/check-pr.js.
+#
+# Project wikis live in folders under okf/ (okf/payments, okf/settlement, …),
+# each with its own SCHEMA.md; okf/ itself may also be a single bundle.
+#
+# The plugin labels a pull request `wiki-auto-merge` when it believes the change
+# is eligible. This workflow never trusts that label alone: it re-runs lint and
+# the eligibility check, both taken from the BASE branch (a pull request cannot
+# weaken the rules that judge it), and only then turns on GitHub auto-merge.
+#
+# Needs: "Allow auto-merge" in the repository settings, and branch protection
+# on the base branch that requires this job, so auto-merge waits for it.
+name: wiki auto-merge
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, labeled]
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  wiki-check:
+    if: contains(github.event.pull_request.labels.*.name, 'wiki-auto-merge')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Only unreviewed pages of one project wiki changed (checker from the base branch)
+        id: check
+        run: |
+          git show "origin/${{ github.base_ref }}:.github/wiki/check-pr.js" > "$RUNNER_TEMP/check-pr.mjs"
+          node "$RUNNER_TEMP/check-pr.mjs" "origin/${{ github.base_ref }}" HEAD okf
+      - name: Lint that project wiki (okf.py from the base branch)
+        run: |
+          git show "origin/${{ github.base_ref }}:scripts/okf.py" > scripts/okf.py
+          python scripts/okf.py lint --bundle "${{ steps.check.outputs.wiki }}"
+      - name: Enable auto-merge
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh pr merge --auto --squash "${{ github.event.pull_request.number }}" --repo "${{ github.repository }}"

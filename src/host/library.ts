@@ -53,6 +53,19 @@ interface LibraryFile {
   sessions: Record<string, { bundleId: string, selectedAt: string }>
 }
 
+/**
+ * Whether a path is a folder.
+ * @param path - the path.
+ * @returns true for an existing folder.
+ */
+async function isDirectory(path: string): Promise<boolean> {
+  try {
+    return (await stat(path)).isDirectory()
+  } catch {
+    return false
+  }
+}
+
 /** Library settings from the plugin row. */
 export interface LibraryOptions {
   /** Where bundles and library.json live. */
@@ -136,6 +149,11 @@ export interface Library {
    * top level, else the bundle root. Idempotent.
    */
   editWorkspace(id: string): Promise<EditWorkspaceAnswer>
+  /**
+   * Add or replace an entry another part of this plugin made (the Team Wiki
+   * page's maintenance workspaces). Its root must exist.
+   */
+  put(entry: LibraryEntry): Promise<LibraryEntry>
   getSession(sessionId: string): Promise<SessionSelection | null>
   setSession(sessionId: string, bundleId: string | null): Promise<SessionSelection | null>
   /** Read library.json into the in-memory copy {@link snapshot} serves. */
@@ -299,6 +317,7 @@ export function openLibrary(options: LibraryOptions): Library {
     update: (id, force = false) => serial(async () => {
       const data = await load()
       const entry = find(data, id)
+      if (entry.team !== undefined) throw new LibraryError('team-workspace', 'This is a Team Wiki maintenance workspace. Its pull request carries the changes; Maintain on the Team Wiki page starts a fresh one after it merges.')
       if (entry.origin.kind !== 'git') throw new LibraryError('not-git', 'This bundle was added from a local folder; there is nothing to update from.')
       const checkout = join(repos, id)
       if (entry.workspace !== undefined && force) throw new LibraryError('editing', 'This bundle is being edited, so Update never discards changes. Discard them with git in its workspace if that is what you want.', 409)
@@ -379,6 +398,14 @@ export function openLibrary(options: LibraryOptions): Library {
       fresh.entries = fresh.entries.map(entry => (entry.id === id ? updated : entry))
       await save(fresh)
       return { entry: updated, workspace, created: true }
+    }),
+
+    put: entry => serial(async () => {
+      if (!(await isDirectory(entry.root))) throw new LibraryError('missing-folder', `${entry.root} is not a folder.`)
+      const data = await load()
+      data.entries = [...data.entries.filter(candidate => candidate.id !== entry.id), entry]
+      await save(data)
+      return entry
     }),
 
     getSession: async (sessionId) => {

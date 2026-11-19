@@ -4,7 +4,8 @@
 # per-session prompt context (bundle folder + catalog). It registers no tools:
 # the agent reads the bundle with the Harness's own file tools.
 # The client graph reads `dsh.client` from this same manifest and serves
-# exports["./client"] (the session-header chip and the dialog).
+# exports["./client"] (the session-header chip, the dialog, and the Team Wiki
+# sidebar page).
 #
 # Optional config (a patch replaces the whole config block):
 #
@@ -14,6 +15,11 @@
 #       gitTimeoutMs: 300000
 #       indexChars: 8000      # characters of index.md sent each turn; 0 = none
 #       promptContext: true   # tell the model which bundle the session uses
+#       team:                 # Team Wiki sidebar page (all optional)
+#         url: 'https://github.com/acme/team-wiki'   # connect this repo when none is connected
+#         root: okf           # folder holding the project wikis
+#         python: python      # runs the repo's scripts/okf.py
+#         autoMergeLabel: wiki-auto-merge
 - insert:
     - id: okf
       name: '@local/dsh-okf'

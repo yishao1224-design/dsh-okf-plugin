@@ -9,7 +9,12 @@
  * - `shell.overlay`: the dialog itself (library, fetch form, preview, page
  *   reader, session selector), drawn over the frame while open.
  *
- * Both entries share one store. The `apply`/`inject` shape is the contract the
+ * - `sidebar.panellist` + `main`: the Team Wiki page (see `team.tsx`): the team
+ *   wiki repository's project wikis, their pull requests, New project wiki and
+ *   Maintain. In a maintenance session, an Open pull request button joins the
+ *   chip in the header and composer, and its dialog sits in `shell.overlay`.
+ *
+ * Every entry shares one store. The `apply`/`inject` shape is the contract the
  * Harness client Loader mounts; types come from `../types/contract.ts`.
  *
  * DSH's `workspaces` and `uiWorkspace` services (for Edit as workspace) are
@@ -23,6 +28,10 @@ import { OkfDialog, SessionChip } from './components.tsx'
 import type { OkfInjected } from './components.tsx'
 import { en, NS, zh } from './locales.ts'
 import { createOkfStore } from './store.ts'
+import { MaintainButton, OpenPrDialog, TeamWikiIcon, TeamWikiPage } from './team.tsx'
+
+/** The `main` key of the Team Wiki page and the id of its sidebar entry. */
+export const PANEL_ID = 'okf-team-wiki'
 
 /** Required services: the slot registry and dictionaries. */
 export const inject = ['slots', 'locale']
@@ -33,17 +42,26 @@ export const inject = ['slots', 'locale']
  */
 export function apply(ctx: ClientContext): void {
   ctx.effect(() => ctx.locale.register(NS, { zh, en }), 'okf: dictionaries')
+  const t = ctx.locale.bind(NS)
 
-  let navigation: WorkspaceNavigation | undefined
+  let navigation: Omit<WorkspaceNavigation, 'layout'> | undefined
+  let layout: WorkspaceNavigation['layout']
   ctx.inject(['workspaces', 'uiWorkspace'], (scope) => {
     scope.effect(() => {
       navigation = { workspaces: scope.workspaces, uiWorkspace: scope.uiWorkspace }
       return () => { navigation = undefined }
     }, 'okf: workspace services')
   })
+  ctx.inject(['layout'], (scope) => {
+    scope.effect(() => {
+      layout = scope.layout
+      return () => { layout = undefined }
+    }, 'okf: layout service')
+  })
+  const current = (): WorkspaceNavigation | undefined => (navigation === undefined ? undefined : { ...navigation, ...layout === undefined ? {} : { layout } })
 
   ctx.effect(() => {
-    const store = createOkfStore(undefined, () => navigation)
+    const store = createOkfStore(undefined, current)
     const injected = (): OkfInjected => ({ store })
     const disposeDialog = ctx.slots.inject('shell.overlay', () => ctx.slots.register({
       name: 'shell.overlay',
@@ -65,14 +83,51 @@ export function apply(ctx: ClientContext): void {
       locale: NS,
       inject: () => ({ store, compact: true }),
     }, SessionChip))
+    const disposeTeam = [
+      ctx.slots.inject('main', () => ctx.slots.register({
+        name: 'main',
+        key: PANEL_ID,
+        locale: NS,
+        inject: injected,
+      }, TeamWikiPage)),
+      ctx.slots.inject('sidebar.panellist', () => ctx.slots.register({
+        name: 'sidebar.panellist',
+        id: PANEL_ID,
+        order: 30,
+        locale: NS,
+        label: () => t('panel'),
+      }, TeamWikiIcon)),
+      ctx.slots.inject('shell.overlay', () => ctx.slots.register({
+        name: 'shell.overlay',
+        id: 'okf-team-pr',
+        locale: NS,
+        inject: injected,
+      }, OpenPrDialog)),
+      ctx.slots.inject('conversation.session.header.utilities', () => ctx.slots.register({
+        name: 'conversation.session.header.utilities',
+        id: 'okf-team-pr',
+        order: -21,
+        locale: NS,
+        inject: injected,
+      }, MaintainButton)),
+      ctx.slots.inject('conversation.input.right', () => ctx.slots.register({
+        name: 'conversation.input.right',
+        id: 'okf-team-pr',
+        order: -21,
+        locale: NS,
+        inject: () => ({ store, compact: true }),
+      }, MaintainButton)),
+    ]
     return () => {
+      for (const dispose of disposeTeam.reverse()) dispose()
       disposeComposer()
       disposeChip()
       disposeDialog()
       store.dispose()
     }
-  }, 'okf: session chip and dialog')
+  }, 'okf: session chip, dialog and Team Wiki page')
 }
 
 // Re-exported for scripts/smoke.mjs, which tests the built artifact only.
 export { bundleTarget, renderMarkdown } from './markdown.tsx'
+export { slugify } from './team.tsx'

@@ -5,6 +5,10 @@
  *   fence and browser-cookie check run first): list the library, fetch a bundle
  *   from a git or Azure DevOps remote, update it, add a local folder, remove an
  *   entry, read a bundle's catalog and pages, and get/set the bundle of a session.
+ * - Team Wiki routes (`/api/okf/team/*`, see `host/team.ts`): the team wiki
+ *   repository's project wikis with review counts, their open pull requests and
+ *   auto-merge verdicts, New project wiki, Maintain (a clone on a wiki branch
+ *   that becomes a DSH Workspace), and Open pull request.
  * - A system-prompt context that tells the model which bundle its session uses,
  *   where its folder is, and what its catalog holds. The model reads the pages
  *   with the Harness's own file tools; this plugin registers none.
@@ -24,8 +28,12 @@ import { join } from 'node:path'
 import { readPage, summarize } from './host/bundle.ts'
 import { GitError } from './host/git.ts'
 import { IndexCache, sessionContext } from './host/knowledge.ts'
+import { GitHubError } from './host/github.ts'
 import { LibraryError, openLibrary } from './host/library.ts'
 import type { Library } from './host/library.ts'
+import { RunError } from './host/run.ts'
+import { openTeam } from './host/team.ts'
+import type { Team } from './host/team.ts'
 import type { HostContext } from './types/contract.ts'
 import { ROUTES } from './types/okf.ts'
 import type { AddLocalRequest, FetchRequest } from './types/okf.ts'
@@ -45,6 +53,32 @@ export interface Config {
   readonly indexChars?: number
   /** Tell the model about the session's bundle. Default true. */
   readonly promptContext?: boolean
+  /** Team Wiki settings. */
+  readonly team?: TeamConfigRow
+}
+
+/** `config.team` on the row. */
+export interface TeamConfigRow {
+  /** Connect this repository when none is connected yet. */
+  readonly url?: string
+  /** Its base branch. Default: the remote's default branch. */
+  readonly ref?: string
+  /** The folder holding the project wikis. Default `okf`. */
+  readonly root?: string
+  /** The Python executable that runs okf.py. Default `python` on Windows, else `python3`. */
+  readonly python?: string
+  /** The toolchain, relative to the repository. Default `scripts/okf.py`. */
+  readonly okfScript?: string
+  /** GitHub host name. Default `github.com`. */
+  readonly githubHost?: string
+  /** GitHub REST base URL. Default `https://api.github.com`. */
+  readonly githubApi?: string
+  /** Label set on pull requests eligible for auto-merge; `''` sets none. Default `wiki-auto-merge`. */
+  readonly autoMergeLabel?: string
+  /** `generated.by` written when a reviewed page is reset. Default `dsh/agent`. */
+  readonly agentActor?: string
+  /** Committer used when git has no identity configured. Default `DSH Wiki <dsh-wiki@users.noreply.github.com>`. */
+  readonly commitAuthor?: string
 }
 
 /**
@@ -80,6 +114,8 @@ function failure(error: unknown): Response {
     return json({ error: { code: error.code, message: error.message, ...error.detail === undefined ? {} : { detail: error.detail } } }, error.status)
   }
   if (error instanceof GitError) return json({ error: { code: `git-${error.code}`, message: error.message } }, 502)
+  if (error instanceof RunError) return json({ error: { code: 'command-failed', message: [error.message, error.stdout].filter(Boolean).join('\n').slice(0, 6000) } }, 502)
+  if (error instanceof GitHubError) return json({ error: { code: `github-${String(error.status)}`, message: `GitHub: ${error.message}` } }, 502)
   const code = (error as NodeJS.ErrnoException).code
   if (code === 'ENOENT') return json({ error: { code: 'not-found', message: 'No such page or folder.' } }, 404)
   const message = error instanceof Error ? error.message : String(error)
@@ -130,8 +166,14 @@ function required(record: Record<string, unknown>, key: string): string {
   return value
 }
 
+/** What the routes act on. */
+export interface Services {
+  readonly library: Library
+  readonly team: Team
+}
+
 /** A route handler over a parsed request. */
-type Handler = (request: Request, library: Library) => Promise<Response>
+type Handler = (request: Request, services: Services) => Promise<Response>
 
 /**
  * Wrap a handler with the method check and the error mapping.
@@ -139,11 +181,11 @@ type Handler = (request: Request, library: Library) => Promise<Response>
  * @param handler - the handler.
  * @returns a Fetch handler bound to the library.
  */
-function route(methods: readonly string[], handler: Handler): (request: Request, library: Library) => Promise<Response> {
-  return async (request, library) => {
+function route(methods: readonly string[], handler: Handler): (request: Request, services: Services) => Promise<Response> {
+  return async (request, services) => {
     if (!methods.includes(request.method)) return new Response(null, { status: 405, headers: { allow: methods.join(', ') } })
     try {
-      return await handler(request, library)
+      return await handler(request, services)
     } catch (error) {
       return failure(error)
     }
@@ -151,17 +193,17 @@ function route(methods: readonly string[], handler: Handler): (request: Request,
 }
 
 /** Every handler, keyed by route path. Exported for the smoke test. */
-export const handlers: Readonly<Record<string, { methods: readonly ('GET' | 'POST')[], handle: (request: Request, library: Library) => Promise<Response> }>> = {
+export const handlers: Readonly<Record<string, { methods: readonly ('GET' | 'POST')[], handle: (request: Request, services: Services) => Promise<Response> }>> = {
   [ROUTES.library]: {
     methods: ['GET'],
-    handle: route(['GET'], async (_request, library) => {
+    handle: route(['GET'], async (_request, { library }) => {
       await library.refresh()
       return json({ entries: await library.list(), libraryDir: library.dir })
     }),
   },
   [ROUTES.fetch]: {
     methods: ['POST'],
-    handle: route(['POST'], async (request, library) => {
+    handle: route(['POST'], async (request, { library }) => {
       const record = await body(request)
       const wanted: FetchRequest = {
         url: required(record, 'url'),
@@ -172,14 +214,14 @@ export const handlers: Readonly<Record<string, { methods: readonly ('GET' | 'POS
   },
   [ROUTES.update]: {
     methods: ['POST'],
-    handle: route(['POST'], async (request, library) => {
+    handle: route(['POST'], async (request, { library }) => {
       const record = await body(request)
       return json(await library.update(required(record, 'id'), record.force === true))
     }),
   },
   [ROUTES.addLocal]: {
     methods: ['POST'],
-    handle: route(['POST'], async (request, library) => {
+    handle: route(['POST'], async (request, { library }) => {
       const record = await body(request)
       const wanted: AddLocalRequest = { path: required(record, 'path'), ...optionalFields(record, ['id', 'name']) }
       return json({ entry: await library.addLocal(wanted) })
@@ -187,14 +229,14 @@ export const handlers: Readonly<Record<string, { methods: readonly ('GET' | 'POS
   },
   [ROUTES.editWorkspace]: {
     methods: ['POST'],
-    handle: route(['POST'], async (request, library) => {
+    handle: route(['POST'], async (request, { library }) => {
       const record = await body(request)
       return json(await library.editWorkspace(required(record, 'id')))
     }),
   },
   [ROUTES.remove]: {
     methods: ['POST'],
-    handle: route(['POST'], async (request, library) => {
+    handle: route(['POST'], async (request, { library }) => {
       const record = await body(request)
       await library.remove(required(record, 'id'), record.deleteFiles === true)
       return json({ ok: true })
@@ -202,14 +244,14 @@ export const handlers: Readonly<Record<string, { methods: readonly ('GET' | 'POS
   },
   [ROUTES.bundle]: {
     methods: ['GET'],
-    handle: route(['GET'], async (request, library) => {
+    handle: route(['GET'], async (request, { library }) => {
       const query = Object.fromEntries(new URL(request.url).searchParams)
       return json(await summarize(await library.get(required(query, 'id'))))
     }),
   },
   [ROUTES.page]: {
     methods: ['GET'],
-    handle: route(['GET'], async (request, library) => {
+    handle: route(['GET'], async (request, { library }) => {
       const query = Object.fromEntries(new URL(request.url).searchParams)
       const entry = await library.get(required(query, 'id'))
       try {
@@ -222,7 +264,7 @@ export const handlers: Readonly<Record<string, { methods: readonly ('GET' | 'POS
   },
   [ROUTES.session]: {
     methods: ['GET', 'POST'],
-    handle: route(['GET', 'POST'], async (request, library) => {
+    handle: route(['GET', 'POST'], async (request, { library }) => {
       if (request.method === 'GET') {
         const query = Object.fromEntries(new URL(request.url).searchParams)
         return json(await library.getSession(required(query, 'sessionId')))
@@ -231,6 +273,67 @@ export const handlers: Readonly<Record<string, { methods: readonly ('GET' | 'POS
       const bundleId = record.bundleId
       if (bundleId !== null && typeof bundleId !== 'string') throw new LibraryError('bad-request', '"bundleId" must be a string or null.')
       return json(await library.setSession(required(record, 'sessionId'), bundleId))
+    }),
+  },
+  [ROUTES.team]: {
+    methods: ['GET'],
+    handle: route(['GET'], async (_request, { team }) => json(await team.status())),
+  },
+  [ROUTES.teamConnect]: {
+    methods: ['POST'],
+    handle: route(['POST'], async (request, { team }) => {
+      const record = await body(request)
+      return json(await team.connect({ url: required(record, 'url'), ...optionalFields(record, ['ref', 'root']) }))
+    }),
+  },
+  [ROUTES.teamRefresh]: {
+    methods: ['POST'],
+    handle: route(['POST'], async (_request, { team }) => json(await team.refresh())),
+  },
+  [ROUTES.teamWiki]: {
+    methods: ['GET'],
+    handle: route(['GET'], async (request, { team }) => {
+      const query = Object.fromEntries(new URL(request.url).searchParams)
+      return json(await team.wiki(required(query, 'folder')))
+    }),
+  },
+  [ROUTES.teamPulls]: {
+    methods: ['GET'],
+    handle: route(['GET'], async (request, { team }) => json(await team.pulls(new URL(request.url).searchParams.get('refresh') === '1'))),
+  },
+  [ROUTES.teamCreate]: {
+    methods: ['POST'],
+    handle: route(['POST'], async (request, { team }) => {
+      const record = await body(request)
+      return json(await team.create({ name: required(record, 'name'), ...optionalFields(record, ['folder', 'template']) }))
+    }),
+  },
+  [ROUTES.teamMaintain]: {
+    methods: ['POST'],
+    handle: route(['POST'], async (request, { team }) => {
+      const record = await body(request)
+      return json(await team.maintain(required(record, 'folder')))
+    }),
+  },
+  [ROUTES.teamChanges]: {
+    methods: ['GET'],
+    handle: route(['GET'], async (request, { team }) => {
+      const query = Object.fromEntries(new URL(request.url).searchParams)
+      return json(await team.changes(required(query, 'id')))
+    }),
+  },
+  [ROUTES.teamOpenPr]: {
+    methods: ['POST'],
+    handle: route(['POST'], async (request, { team }) => {
+      const record = await body(request)
+      return json(await team.openPr(required(record, 'id'), optionalFields(record, ['title', 'summary'])))
+    }),
+  },
+  [ROUTES.teamAttach]: {
+    methods: ['POST'],
+    handle: route(['POST'], async (request, { team }) => {
+      const record = await body(request)
+      return json({ entry: await team.attach(required(record, 'folder')) })
     }),
   },
 }
@@ -278,14 +381,33 @@ export function apply(ctx: HostContext, config: Config | null | undefined = {}):
   })
   const knowledge = {
     indexChars: count(settings.indexChars, 8000, 'indexChars'),
+    agentActor: settings.team?.agentActor ?? 'dsh/agent',
   }
+  const teamRow = settings.team ?? {}
+  const team = openTeam({
+    dir: join(library.dir, 'team'),
+    library,
+    git: settings.gitPath ?? 'git',
+    python: teamRow.python ?? (process.platform === 'win32' ? 'python' : 'python3'),
+    okfScript: teamRow.okfScript ?? 'scripts/okf.py',
+    githubHost: teamRow.githubHost ?? 'github.com',
+    githubApi: teamRow.githubApi ?? 'https://api.github.com',
+    autoMergeLabel: teamRow.autoMergeLabel ?? 'wiki-auto-merge',
+    agentActor: teamRow.agentActor ?? 'dsh/agent',
+    commitAuthor: teamRow.commitAuthor ?? 'DSH Wiki <dsh-wiki@users.noreply.github.com>',
+    timeoutMs: count(settings.gitTimeoutMs, 300_000, 'gitTimeoutMs'),
+    ...teamRow.url === undefined || teamRow.url.trim() === ''
+      ? {}
+      : { preset: { url: teamRow.url, ...teamRow.ref === undefined ? {} : { ref: teamRow.ref }, ...teamRow.root === undefined ? {} : { root: teamRow.root } } },
+  })
+  const services: Services = { library, team }
 
   for (const [path, handler] of Object.entries(handlers)) {
     ctx.connection.fetch.register({
       path,
       methods: handler.methods,
       requestBody: 'buffered',
-      fetch: request => handler.handle(request, library),
+      fetch: request => handler.handle(request, services),
     })
   }
 
@@ -305,3 +427,7 @@ export function apply(ctx: HostContext, config: Config | null | undefined = {}):
 
 // Re-exported for scripts/smoke.mjs, which tests the built artifact only.
 export { parseRemote, redact } from './host/git.ts'
+export { judge } from './host/eligibility.ts'
+export { reviewState, stampAgentEdit } from './host/review.ts'
+export { discoverWikis, openTeam, readWikiPages } from './host/team.ts'
+export { openLibrary } from './host/library.ts'

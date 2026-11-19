@@ -7,8 +7,11 @@
  * the session cookie rides along and Connection's fence applies.
  */
 import { relative, ROUTES } from '../types/okf.ts'
-import type { BundleSummary, EditWorkspaceAnswer, FetchRequest, LibraryEntry, PageContent, SessionSelection } from '../types/okf.ts'
-import type { UiWorkspaceService, WorkspacesService } from '../types/contract.ts'
+import type {
+  BundleSummary, ChangesAnswer, EditWorkspaceAnswer, FetchRequest, LibraryEntry, MaintainAnswer, OpenPrAnswer, PageContent,
+  PullsAnswer, SessionSelection, TeamStatus, WikiDetail,
+} from '../types/okf.ts'
+import type { LayoutService, UiWorkspaceService, WorkspacesService } from '../types/contract.ts'
 
 /** Deadline for an ordinary call. */
 export const REQUEST_TIMEOUT_MS = 15_000
@@ -83,6 +86,8 @@ export const WORKSPACE_WAIT_MS = 10_000
 export interface WorkspaceNavigation {
   readonly workspaces: WorkspacesService
   readonly uiWorkspace: UiWorkspaceService
+  /** Present when the shell exposes it; used to leave the Team Wiki page for the opened session. */
+  readonly layout?: LayoutService
 }
 
 /** What Edit as workspace did. */
@@ -146,11 +151,38 @@ export interface DialogState {
   readonly pagePath?: string
 }
 
+/** A value loaded from the Host. */
+export interface Loaded<V> {
+  readonly status: 'idle' | 'loading' | 'ready' | 'failed'
+  readonly data?: V
+  readonly error?: string
+}
+
+/** The Team Wiki page's state. */
+export interface TeamState {
+  readonly status: Loaded<TeamStatus>
+  readonly pulls: Loaded<PullsAnswer>
+  readonly wikis: Readonly<Record<string, Loaded<WikiDetail>>>
+  readonly changes: Readonly<Record<string, Loaded<ChangesAnswer>>>
+  /** The Open pull request dialog, for one maintenance workspace. */
+  readonly prDialog?: { readonly maintainId: string }
+  /** A message the page shows once, e.g. after New project wiki. */
+  readonly notice?: { readonly kind: 'ok' | 'error', readonly text: string }
+}
+
 /** Everything the components read. */
 export interface OkfState {
   readonly library: LibraryState
   readonly selections: Readonly<Record<string, SelectionState>>
   readonly dialog: DialogState
+  readonly team: TeamState
+}
+
+/** What opening a maintenance workspace did. */
+export interface OpenOutcome {
+  readonly answer: MaintainAnswer
+  readonly opened: boolean
+  readonly reason?: string
 }
 
 /** The store face. */
@@ -176,6 +208,22 @@ export interface OkfStore {
   editAsWorkspace(id: string): Promise<EditWorkspaceOutcome>
   summary(id: string): Promise<BundleSummary>
   page(id: string, path: string): Promise<PageContent>
+  /** Load the Team Wiki status (connected repository, project wikis). */
+  loadTeam(): Promise<void>
+  connectTeam(request: { url: string, ref?: string, root?: string }): Promise<void>
+  refreshTeam(): Promise<void>
+  loadWiki(folder: string): Promise<void>
+  loadPulls(force?: boolean): Promise<void>
+  /** Create a project wiki, then open a session in its new workspace. */
+  createWiki(request: { name: string, folder?: string, template?: string }): Promise<OpenOutcome>
+  /** Open (or make) the project wiki's maintenance workspace and a session there. */
+  maintainWiki(folder: string): Promise<OpenOutcome>
+  loadChanges(maintainId: string): Promise<void>
+  openPr(maintainId: string, request: { title?: string, summary?: string }): Promise<OpenPrAnswer>
+  openPrDialog(maintainId: string | undefined): void
+  /** Add the project wiki (base branch, read-only) to the library and preview it in the OKF dialog. */
+  previewWiki(folder: string): Promise<void>
+  setNotice(notice: TeamState['notice'] | undefined): void
   dispose(): void
 }
 
@@ -187,7 +235,12 @@ export interface OkfStore {
  */
 export function createOkfStore(fetcher: Fetcher = (input, init) => globalThis.fetch(input, init), navigation: () => WorkspaceNavigation | undefined = () => undefined): OkfStore {
   const listeners = new Set<() => void>()
-  let state: OkfState = { library: { status: 'loading', entries: [] }, selections: {}, dialog: { open: false } }
+  let state: OkfState = {
+    library: { status: 'loading', entries: [] },
+    selections: {},
+    dialog: { open: false },
+    team: { status: { status: 'idle' }, pulls: { status: 'idle' }, wikis: {}, changes: {} },
+  }
   let disposed = false
   let libraryInflight: Promise<void> | undefined
   const selectionInflight = new Map<string, Promise<void>>()
@@ -247,6 +300,51 @@ export function createOkfStore(fetcher: Fetcher = (input, init) => globalThis.fe
       setSelection(sessionId, { loaded: true, bundleId: before?.bundleId ?? null, error: (error as Error).message })
       throw error
     }
+  }
+
+  const setTeam = (next: Partial<TeamState>): void => { set({ team: { ...state.team, ...next } }) }
+  const failed = <V>(before: Loaded<V>, error: unknown): Loaded<V> => ({ ...before, status: 'failed', error: (error as Error).message })
+
+  const loadTeam = async (): Promise<void> => {
+    setTeam({ status: { ...state.team.status, status: 'loading' } })
+    try {
+      setTeam({ status: { status: 'ready', data: await call<TeamStatus>(fetcher, ROUTES.team, { timeoutMs: GIT_TIMEOUT_MS }) } })
+    } catch (error) {
+      setTeam({ status: failed(state.team.status, error) })
+    }
+  }
+
+  const loadPulls = async (force = false): Promise<void> => {
+    setTeam({ pulls: { ...state.team.pulls, status: 'loading' } })
+    try {
+      const data = await call<PullsAnswer>(fetcher, ROUTES.teamPulls, { ...force ? { query: { refresh: '1' } } : {}, timeoutMs: GIT_TIMEOUT_MS })
+      setTeam({ pulls: { status: 'ready', data } })
+    } catch (error) {
+      setTeam({ pulls: failed(state.team.pulls, error) })
+    }
+  }
+
+  /** Register the workspace, open a session there with the entry attached, and show it. */
+  const openWorkspace = async (entry: LibraryEntry, path: string): Promise<{ opened: boolean, reason?: string }> => {
+    const services = navigation()
+    if (services === undefined) return { opened: false, reason: 'unavailable' }
+    try {
+      const workspace = await services.workspaces.create({ path })
+      await waitForWorkspace(services.workspaces, workspace.workspaceId)
+      const sessionId = await services.uiWorkspace.connectWorkspace(workspace.workspaceId)
+      await select(sessionId, entry.id)
+      services.layout?.selectPanel(null)
+      services.uiWorkspace.openSession(sessionId)
+      return { opened: true }
+    } catch (error) {
+      return { opened: false, reason: (error as Error).message }
+    }
+  }
+
+  const afterMaintain = async (answer: MaintainAnswer): Promise<OpenOutcome> => {
+    await Promise.all([refreshLibrary(), loadTeam()])
+    const outcome = await openWorkspace(answer.entry, answer.workspace)
+    return { answer, ...outcome }
   }
 
   void refreshLibrary()
@@ -319,6 +417,70 @@ export function createOkfStore(fetcher: Fetcher = (input, init) => globalThis.fe
     },
     summary: id => call<BundleSummary>(fetcher, ROUTES.bundle, { query: { id } }),
     page: (id, path) => call<PageContent>(fetcher, ROUTES.page, { query: { id, path } }),
+    loadTeam,
+    async connectTeam(request) {
+      const data = await call<TeamStatus>(fetcher, ROUTES.teamConnect, { method: 'POST', body: request, timeoutMs: GIT_TIMEOUT_MS })
+      setTeam({ status: { status: 'ready', data }, wikis: {}, pulls: { status: 'idle' } })
+      void loadPulls()
+    },
+    async refreshTeam() {
+      setTeam({ status: { ...state.team.status, status: 'loading' } })
+      try {
+        const data = await call<TeamStatus>(fetcher, ROUTES.teamRefresh, { method: 'POST', body: {}, timeoutMs: GIT_TIMEOUT_MS })
+        setTeam({ status: { status: 'ready', data }, wikis: {} })
+      } catch (error) {
+        setTeam({ status: failed(state.team.status, error) })
+      }
+      await loadPulls(true)
+    },
+    async loadWiki(folder) {
+      const before = state.team.wikis[folder] ?? { status: 'idle' }
+      setTeam({ wikis: { ...state.team.wikis, [folder]: { ...before, status: 'loading' } } })
+      try {
+        const data = await call<WikiDetail>(fetcher, ROUTES.teamWiki, { query: { folder } })
+        setTeam({ wikis: { ...state.team.wikis, [folder]: { status: 'ready', data } } })
+      } catch (error) {
+        setTeam({ wikis: { ...state.team.wikis, [folder]: failed(before, error) } })
+      }
+    },
+    loadPulls,
+    async createWiki(request) {
+      const answer = await call<MaintainAnswer>(fetcher, ROUTES.teamCreate, { method: 'POST', body: request, timeoutMs: GIT_TIMEOUT_MS * 2 })
+      return afterMaintain(answer)
+    },
+    async maintainWiki(folder) {
+      const answer = await call<MaintainAnswer>(fetcher, ROUTES.teamMaintain, { method: 'POST', body: { folder }, timeoutMs: GIT_TIMEOUT_MS })
+      return afterMaintain(answer)
+    },
+    async loadChanges(maintainId) {
+      const before = state.team.changes[maintainId] ?? { status: 'idle' }
+      setTeam({ changes: { ...state.team.changes, [maintainId]: { ...before, status: 'loading' } } })
+      try {
+        const data = await call<ChangesAnswer>(fetcher, ROUTES.teamChanges, { query: { id: maintainId }, timeoutMs: GIT_TIMEOUT_MS })
+        setTeam({ changes: { ...state.team.changes, [maintainId]: { status: 'ready', data } } })
+      } catch (error) {
+        setTeam({ changes: { ...state.team.changes, [maintainId]: failed(before, error) } })
+      }
+    },
+    async openPr(maintainId, request) {
+      const answer = await call<OpenPrAnswer>(fetcher, ROUTES.teamOpenPr, { method: 'POST', body: { id: maintainId, ...request }, timeoutMs: GIT_TIMEOUT_MS * 2 })
+      void loadTeam()
+      void loadPulls(true)
+      return answer
+    },
+    async previewWiki(folder) {
+      const answer = await call<{ entry: LibraryEntry }>(fetcher, ROUTES.teamAttach, { method: 'POST', body: { folder } })
+      await refreshLibrary()
+      set({ dialog: { open: true, bundleId: answer.entry.id } })
+    },
+    openPrDialog(maintainId) {
+      const { prDialog: _drop, ...rest } = state.team
+      set({ team: { ...rest, ...maintainId === undefined ? {} : { prDialog: { maintainId } } } })
+    },
+    setNotice(notice) {
+      const { notice: _drop, ...rest } = state.team
+      set({ team: { ...rest, ...notice === undefined ? {} : { notice } } })
+    },
     dispose() {
       disposed = true
       listeners.clear()

@@ -105,7 +105,7 @@ host.apply({
   },
 }, { libraryDir, indexChars: 2000 })
 
-check(routes.size === 9, `expected 9 routes, saw ${String(routes.size)}`)
+check(routes.size === 19, `expected 19 routes, saw ${String(routes.size)}`)
 check([...routes.values()].every(route => route.path.startsWith('/api/okf/') && route.requestBody === 'buffered'), 'every route must sit under /api/okf with a buffered body')
 check(injected.join('|') === 'systemPrompt', `optional services ${injected.join('|')}`)
 check(contexts.length === 1 && contexts[0].name === 'okf:session-bundle' && typeof contexts[0].text === 'function', 'one prompt context with a text callback')
@@ -387,14 +387,17 @@ const effect = (callback) => { const dispose = callback(); if (typeof dispose ==
 client.apply({
   effect,
   inject: (deps, callback) => { clientInjected.push(deps.join(',')); callback({ workspaces: workspacesStub, uiWorkspace: uiWorkspaceStub, effect }) },
-  locale: { register: (ns, dict) => { dictionaries = dict; registrations.push({ kind: 'dictionary', ns }); return () => { registrations.push({ kind: 'dictionary-disposed' }) } }, getLocale: () => ({ active: 'en' }) },
+  locale: { register: (ns, dict) => { dictionaries = dict; registrations.push({ kind: 'dictionary', ns }); return () => { registrations.push({ kind: 'dictionary-disposed' }) } }, getLocale: () => ({ active: 'en' }), bind: () => (k, params = {}) => String(dictionaries?.en[k] ?? k).replace(/\{(\w+)\}/g, (_, name) => String(params[name] ?? '')) },
   slots: {
     inject: (name, contribute) => contribute(),
     register: (options, component) => { registrations.push({ kind: 'register', options, component }); return () => { registrations.push({ kind: 'disposed', id: options.id }) } },
   },
 })
 const entries = registrations.filter(item => item.kind === 'register')
-check(entries.map(item => `${item.options.name}#${item.options.id}`).join(',') === 'shell.overlay#okf-dialog,conversation.session.header.utilities#okf-bundle,conversation.input.right#okf-bundle', `slot registrations ${entries.map(item => item.options.name).join(',')}`)
+check(entries.map(item => `${item.options.name}#${item.options.id ?? item.options.key}`).join(',') === 'shell.overlay#okf-dialog,conversation.session.header.utilities#okf-bundle,conversation.input.right#okf-bundle,main#okf-team-wiki,sidebar.panellist#okf-team-wiki,shell.overlay#okf-team-pr,conversation.session.header.utilities#okf-team-pr,conversation.input.right#okf-team-pr', `slot registrations ${entries.map(item => `${item.options.name}#${item.options.id ?? item.options.key}`).join(',')}`)
+const panelEntry = entries.find(item => item.options.name === 'sidebar.panellist')
+check(panelEntry?.options.label?.() === 'Team Wiki' && client.PANEL_ID === 'okf-team-wiki', `the sidebar entry is labelled Team Wiki: ${String(panelEntry?.options.label?.())}`)
+check(renderToStaticMarkup(React.createElement(panelEntry.component, { size: 16 })).startsWith('<svg width="16"'), 'the sidebar glyph honours the requested size')
 check(entries.every(item => item.options.locale === 'okf'), 'both entries declare the okf namespace')
 check(Object.keys(dictionaries.zh).sort().join('|') === Object.keys(dictionaries.en).sort().join('|'), 'zh and en dictionaries have different keys')
 const t = (k, params = {}) => String(dictionaries.en[k] ?? k).replace(/\{(\w+)\}/g, (_, name) => String(params[name] ?? ''))
@@ -418,7 +421,7 @@ let html = dialog()
 check(html.includes('role="dialog"') && html.includes('This session uses') && html.includes('Library') && html.includes('Add bundle'), `dialog chrome: ${html.slice(0, 400)}`)
 check(html.includes('<option value="alpha-kb" selected="">'), 'the session selector shows the session\'s bundle')
 check(html.includes('Used by this session'), 'the previewed bundle is marked as the session\'s')
-check(clientInjected.join('|') === 'workspaces,uiWorkspace', `optional client services ${clientInjected.join('|')}`)
+check(clientInjected.join('|') === 'workspaces,uiWorkspace|layout', `optional client services ${clientInjected.join('|')}`)
 check(html.includes('>Edit as workspace<') && !html.includes('Editable'), 'a read-only bundle offers Edit as workspace')
 
 // Edit as workspace through DSH's Workspace services: mark editable, register, wait for the row, connect, attach, open.
@@ -440,6 +443,18 @@ const sum = await store.summary('alpha-kb')
 check(sum.pages.length === 7, `store summary pages ${String(sum.pages.length)}`)
 store.closeDialog()
 check(dialog() === '', 'the dialog closes')
+
+// The Team Wiki page: with no repository connected it asks for one.
+const mainEntry = entries.find(item => item.options.name === 'main')
+const teamPage = () => renderToStaticMarkup(React.createElement(mainEntry.component, { ...mainEntry.options.inject(), t }))
+check(mainEntry.options.inject().store === store, 'the Team Wiki page shares the store')
+check(teamPage().includes('Loading the team wiki'), 'the page starts loading')
+await store.loadTeam()
+html = teamPage()
+check(html.includes('>Team Wiki<') && html.includes('Connect the team wiki repository') && html.includes('value="okf"'), `team page without a repository: ${html.slice(0, 500)}`)
+const prEntry = entries.find(item => item.options.name === 'conversation.session.header.utilities' && item.options.id === 'okf-team-pr')
+check(renderToStaticMarkup(React.createElement(prEntry.component, { ...prEntry.options.inject('s-1'), sessionId: 's-1', t })) === '', 'Open pull request stays hidden outside a maintenance session')
+check(client.slugify('Settlement Wiki') === 'settlement' && client.slugify('Payments-Ops') === 'payments-ops', 'folder suggestions')
 
 // Offline: a route nobody registered answers the app's HTML.
 const offlineFetch = globalThis.fetch
@@ -469,7 +484,7 @@ check(client.bundleTarget('../entities/x.md', 'concepts/a.md') === 'entities/x.m
 check(client.bundleTarget('../../x.md', 'concepts/a.md') === undefined && client.bundleTarget('https://a.b/c.md', 'a.md') === undefined, 'links leaving the bundle are not bundle links')
 
 for (const dispose of disposers.reverse()) dispose()
-check(registrations.filter(item => item.kind === 'disposed').length === 3 && registrations.some(item => item.kind === 'dictionary-disposed'), 'disposal removes both entries and the dictionaries')
+check(registrations.filter(item => item.kind === 'disposed').length === 8 && registrations.some(item => item.kind === 'dictionary-disposed'), 'disposal removes every entry and the dictionaries')
 const unexpected = [...new Set(requested)].filter(specifier => specifier !== 'react' && specifier !== 'react/jsx-runtime')
 check(unexpected.length === 0, `artifact requested non-platform modules: ${unexpected.join(', ')}`)
 

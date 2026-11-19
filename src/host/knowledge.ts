@@ -29,6 +29,8 @@ import type { LibraryEntry } from '../types/okf.ts'
 export interface KnowledgeOptions {
   /** How much of the bundle's index.md rides along each turn. 0 sends none. */
   readonly indexChars: number
+  /** `generated.by` a Team Wiki maintenance session writes. Default `dsh/agent`. */
+  readonly agentActor?: string
 }
 
 /** Prompt-context order. In-tree contexts sit at 110-120; this follows them. */
@@ -145,6 +147,27 @@ const EDIT_RULES = [
 ]
 
 /**
+ * Rules for a Team Wiki maintenance workspace. The review rule is the team's:
+ * a page is reviewed only when a person stamped it, and any agent edit makes
+ * it an unreviewed draft again.
+ * @param actor - the `generated.by` value to write.
+ * @returns the lines.
+ */
+function teamEditRules(actor: string): string[] {
+  const date = new Date().toISOString().slice(0, 10)
+  return [
+    "- You may edit this project wiki: it is a team wiki maintenance workspace (its own git clone on a wiki branch) inside this session's workspace. Edit only files under the bundle root. Keep it a valid OKF bundle:",
+    '  - Read SCHEMA.md before your first edit, and follow its conventions (types, tags, frontmatter templates).',
+    '  - Every page keeps its YAML frontmatter with at least type, title, description, status, lifecycle and updated.',
+    `  - Every page you create or change is an unreviewed draft: set status: draft, lifecycle: draft, updated: ${date}, and generated: { by: ${actor}, at: ${date} } (keep created; add created: ${date} on a new page).`,
+    '  - Never add or edit a verified entry, never set lifecycle: active, and never write human:… anywhere. Only a person may mark a page reviewed.',
+    '  - Never edit files under sources/ that already exist; add a new dated capture instead. Do not change SCHEMA.md unless the user asks.',
+    '  - A new page gets a line in index.md under the right section. When you rename or remove a page, update index.md and the links that point at it. Links are bundle-relative (/concepts/foo.md).',
+    '  - Do not run git commit or git push. When the user is happy with the changes, tell them to press Open pull request in the session header: it runs okf.py links, index, lint and log, commits, pushes and opens the pull request. A change that only touches unreviewed pages may merge on its own; editing a reviewed page needs a person.',
+  ]
+}
+
+/**
  * Whether the session may edit the bundle: it is editable, and the session's
  * workspace holds its root (DSH confines writes to the session workspace).
  * @param entry - the bundle.
@@ -169,9 +192,11 @@ export function contextText(entry: LibraryEntry, index: string | undefined, opti
     ? entry.workspace === undefined
       ? `a local mirror of ${entry.origin.url}${entry.origin.path === '' ? '' : ` (folder ${entry.origin.path})`}${entry.origin.commit === undefined ? '' : ` at commit ${entry.origin.commit.slice(0, 12)}`}; edits to it are overwritten by the next update`
       : `a git clone of ${entry.origin.url}${entry.origin.path === '' ? '' : ` (folder ${entry.origin.path})`}, being edited; its workspace is ${entry.workspace}`
-    : editable ? "a git working copy in this session's workspace" : 'a folder on this machine'
+    : entry.team !== undefined
+      ? `the project wiki ${entry.team.wiki} in a team wiki maintenance workspace${editable ? " (this session's workspace)" : `, ${entry.workspace ?? ''}`}`
+      : editable ? "a git working copy in this session's workspace" : 'a folder on this machine'
   const editing = editable
-    ? EDIT_RULES
+    ? entry.team !== undefined ? teamEditRules(options.agentActor ?? 'dsh/agent') : EDIT_RULES
     : entry.workspace === undefined
       ? ['- Do not edit files in the bundle.']
       : [`- Do not edit the bundle from this session. It is edited from its own workspace, ${entry.workspace}; if the user wants changes, tell them to open that workspace (OKF dialog → Open editing workspace).`]

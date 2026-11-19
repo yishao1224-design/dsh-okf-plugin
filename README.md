@@ -2,11 +2,12 @@
 
 A DeepSeek Harness plugin for **OKF knowledge bundles** ([Open Knowledge Format](https://github.com/GoogleCloudPlatform/open-knowledge-format), v0.2): folders of markdown pages with YAML frontmatter, such as the `okf/` bundle in `knowledgeAgent`.
 
-It does three things:
+It does four things:
 
 1. **Fetch** a bundle from a git remote (GitHub, Azure DevOps, or any git host) into a local library folder, and update it later.
 2. **Preview** any bundle in the library: stats, a filterable catalog, and a page reader.
 3. **Attach a bundle to a chat session**, so the agent in that session gets the bundle's catalog and folder each turn and reads the pages itself.
+4. **Run a team wiki** from the **Team Wiki** sidebar page: every project wiki in the team's wiki repository with its review counts and open pull requests, **New project wiki**, and **Maintain** (a session in the wiki's own workspace that ends in a pull request, which merges on its own when it only touches unreviewed pages). See [Team Wiki](#team-wiki).
 
 Like the other `dsh_plugins` bundles it is a **standalone Harness bundle**. Nothing is imported from or written into a DSH source checkout.
 
@@ -94,6 +95,45 @@ For a token instead, set one of these **before starting `dsh`**. The most specif
 
 The token goes to git as an `http.extraHeader` through `GIT_CONFIG_*` environment variables. It never appears in the process arguments, the remote URL, `.git/config`, `library.json`, or an error message. A URL that embeds a password (`https://user:pat@…`) is refused.
 
+## Team Wiki
+
+The **Team Wiki** entry in the sidebar (under User stories) opens a page in the main column.
+
+```text
+ Team Wiki · github.com/acme/team-wiki (main)      [Refresh] [Change repository] [+ New project wiki]
+ Project wikis | All bundles
+ ┌──────────────────────┬────────────────────────────────────────────────────────────────┐
+ │ Onboarding           │ Payments  okf/payments                [Open workspace] [Preview] │
+ │ okf/onboarding       │ 16 Pages · 1 Reviewed · 15 Unreviewed · 11 Overdue review      │
+ │ ▸ Payments  Being m… │ Pull requests (2) | Pages (16) | Needs review (15)             │
+ │ okf/payments · 2 PRs │ Add the release process page #1  Auto-merge eligible · CI run… │
+ │                      │ Clarify lifecycle states #2      Needs human review            │
+ └──────────────────────┴────────────────────────────────────────────────────────────────┘
+```
+
+**The repository.** One git repository holds every project wiki of the team, each in its own folder with a `SCHEMA.md` under the wiki folder (default `okf/`: `okf/payments`, `okf/onboarding`, …). If `okf/` itself has a `SCHEMA.md` it is listed as a wiki too, so a single-bundle repository such as knowledgeAgent works as is. The wikis share `scripts/okf.py`, CI and the auto-merge rule. Connect it once on the page (URL, optional base branch, wiki folder), or preset it in the row config (`team.url`). The plugin keeps a clone of the base branch in `<library>/team/main` for the page, and never edits it.
+
+**Review state** needs no new field. A page counts as **reviewed** when `lifecycle: active` and its latest `verified` entry is by `human:<id>` and is not older than `generated.at`. Everything else is **unreviewed**. **Overdue review** is `lifecycle: needs_review` or a `stale_after` date in the past.
+
+**Maintain** clones the repository into `<library>/team/work/<id>` on a new branch `wiki/<folder>-<date>-<hex>`, registers that clone as a DSH workspace, and opens a session there with the project wiki attached. The session may edit only that wiki, with DSH's own file tools. Its prompt carries the team rules: every page it writes is an unreviewed draft (`status: draft`, `lifecycle: draft`, `generated: { by: dsh/agent, at: <today> }`), it never writes `verified` or `human:…`, it never edits an existing capture, and it does not commit. Maintain on the same wiki reopens the same workspace until its pull request merges or closes; after that it makes a fresh one.
+
+**Open pull request** is a button in the maintenance session's header and composer (it shows **PR #n** once there is one). Its dialog lists what changed and takes a title and summary. Then the Host:
+
+1. resets any reviewed page that was edited without resetting its stamp to an unreviewed draft (its `verified` history stays);
+2. runs the repository's own `scripts/okf.py` over the wiki: `links`, `index`, `lint` (a failure stops here and nothing is committed), and one `log` line per changed page;
+3. commits **only the wiki's folder** (other changes are left out and listed), pushes the branch with the token, and opens or updates the GitHub pull request;
+4. judges the whole branch against the base: it is **auto-merge eligible** only when every changed file is an unreviewed (or new) page, a new capture under `sources/`, `index.md` or `log.md`. Editing a reviewed page, deleting a page, changing `SCHEMA.md` or `archive/`, touching an existing capture, anything outside the wiki, or a page claiming a human review needs a person. Eligible pull requests get the `wiki-auto-merge` label; the label comes off when that stops being true.
+
+**CI decides, not the label.** `examples/wiki-auto-merge.yml` is a workflow for the wiki repository: it re-runs the same eligibility check with `lib/check-pr.js` and `okf.py lint`, both taken **from the base branch** so a pull request cannot weaken the rules that judge it, and only then turns on GitHub auto-merge. Copy `lib/check-pr.js` to `.github/wiki/check-pr.js` in the wiki repository, enable "Allow auto-merge", and require the job in branch protection.
+
+**The pull request list** reads open pull requests from GitHub (title, author, labels, checks), fetches their branches into the clone, and computes the files and the verdict from git with the same rule. A pull request appears under every project wiki it touches; one that touches no wiki is not listed.
+
+**New project wiki** takes a name, a folder and a starting `SCHEMA.md` (copied from an existing wiki, or `okf.py`'s default). It makes a workspace on `wiki/new-<folder>-<hex>`, runs `okf.py init` and `index` for the new folder (and drops what `init` touched outside it), writes `wiki_name: <name>` into `SCHEMA.md`, opens the setup as the first pull request (a new `SCHEMA.md` always needs a person), and opens a session in the workspace. The wiki joins the list once that pull request merges.
+
+**Preview** adds the wiki as it is on the base branch to the library (read-only) and opens it in the OKF dialog; any session can then attach it from the OKF chip. **All bundles** lists the whole library.
+
+**Tokens.** Pushing and opening pull requests use `DSH_OKF_GITHUB_TOKEN` (or `DSH_OKF_GIT_TOKEN`), as a git `http.extraHeader` through `GIT_CONFIG_*` and as a `Bearer` header to the REST API, never in argv, a URL or a config file. Without a token the branch is still pushed when git's own credentials allow it, and the page says the pull request could not be opened. Azure DevOps repositories work for Maintain, New project wiki and pushing; their pull requests are not listed or opened yet.
+
 ## How the agent uses the bundle
 
 When a session has a bundle, the Host adds a **system-prompt context** (`okf:session-bundle`) on every turn. The context names the bundle and its folder, explains the OKF conventions, and includes the bundle's `index.md` catalog (first 8000 characters by default). DSH sends contexts after the retained history, so switching bundles does not invalidate the cached system-prompt prefix. The agent loop also logs the context whenever it changes.
@@ -117,6 +157,15 @@ Optional settings go under the row in `cordis.patch.yml`. A patch replaces the w
 | `gitTimeoutMs` | `300000` | Deadline for one git command |
 | `indexChars` | `8000` | Characters of `index.md` sent each turn; `0` sends none |
 | `promptContext` | `true` | Add the per-session context |
+| `team.url` | — | Team wiki repository to connect when none is connected yet |
+| `team.ref` | the remote's default branch | Base branch of the team wiki |
+| `team.root` | `okf` | Folder holding the project wikis |
+| `team.python` | `python` on Windows, else `python3` | Runs the repository's `scripts/okf.py` |
+| `team.okfScript` | `scripts/okf.py` | The toolchain, relative to the repository |
+| `team.githubHost` / `team.githubApi` | `github.com` / `https://api.github.com` | For GitHub Enterprise |
+| `team.autoMergeLabel` | `wiki-auto-merge` | Label on eligible pull requests; `''` sets none |
+| `team.agentActor` | `dsh/agent` | `generated.by` the maintenance rules ask for |
+| `team.commitAuthor` | `DSH Wiki <dsh-wiki@users.noreply.github.com>` | Committer when git has no identity |
 
 ## How fetching works
 
@@ -132,7 +181,9 @@ A large monorepo therefore costs little more than the bundle itself. Update runs
 dsh-okf-plugin/
 ├── package.json          # dsh.bundle.patch + dsh.client + exports["./client"]
 ├── cordis.patch.yml      # inserts the one row, named after this package
-├── build.mjs             # emits lib/index.js (Host) and lib/client.js (browser)
+├── build.mjs             # emits lib/index.js (Host), lib/client.js (browser), lib/check-pr.js (CI)
+├── examples/
+│   └── wiki-auto-merge.yml # CI workflow for the team wiki repository
 ├── src/
 │   ├── index.ts          # Host: /api/okf/* routes, prompt context
 │   ├── host/
@@ -140,7 +191,13 @@ dsh-okf-plugin/
 │   │   ├── library.ts    # library.json, fetch/update/add/remove, session selections
 │   │   ├── bundle.ts     # bundle detection, catalog summary, safe page reads
 │   │   ├── frontmatter.ts# small YAML frontmatter reader (no dependencies)
-│   │   └── knowledge.ts  # the per-session prompt context
+│   │   ├── knowledge.ts  # the per-session prompt context (team rules in maintenance sessions)
+│   │   ├── team.ts       # Team Wiki: project wikis, PR list, Maintain, New project wiki, Open pull request
+│   │   ├── review.ts     # reviewed/unreviewed from frontmatter; the agent-edit stamp
+│   │   ├── eligibility.ts# the auto-merge rule (shared with lib/check-pr.js)
+│   │   ├── github.ts     # the few GitHub REST calls
+│   │   └── run.ts        # git / python child processes with the token header
+│   ├── check-pr.ts       # CI checker -> lib/check-pr.js
 │   ├── types/
 │   │   ├── okf.ts        # records and routes shared by both halves
 │   │   └── contract.ts   # vendored copy of the Harness contract faces used
@@ -148,11 +205,13 @@ dsh-okf-plugin/
 │       ├── index.ts      # apply(): dictionaries + the two slot entries
 │       ├── store.ts      # the one store: library, selections, dialog state
 │       ├── components.tsx# session chip, dialog, add form, preview, page reader
+│       ├── team.tsx      # Team Wiki page, sidebar glyph, Open pull request button + dialog
 │       ├── markdown.tsx  # markdown → React elements (no innerHTML)
 │       ├── styles.ts     # inline style table on the shell's --dsw-* tokens
 │       └── locales.ts    # the `okf` namespace copy (zh source of truth, en)
 └── scripts/
     ├── smoke.mjs         # both halves end to end, no Harness needed
+    ├── team-smoke.mjs    # the Team Wiki end to end against a bare repo + a fake GitHub API
     ├── harness-check.mjs # against DSH's real SystemPrompt + ToolRuntime (needs a checkout)
     └── preview-server.mjs# a dev page that mounts the built UI against the real Host routes
 ```
@@ -162,8 +221,8 @@ dsh-okf-plugin/
 ```sh
 npm install
 npm run typecheck
-npm run build      # -> lib/index.js + lib/client.js
-npm run smoke
+npm run build      # -> lib/index.js + lib/client.js + lib/check-pr.js
+npm run smoke      # smoke.mjs, then team-smoke.mjs
 ```
 
 `lib/` is committed on purpose. The profile installs the package as it is, with no build toolchain. The Host artifact may import only Node built-ins, and `build.mjs` fails if it imports anything else.
@@ -179,15 +238,19 @@ npm run smoke
 - **Remote parsing:** GitHub and Azure DevOps URL forms, and redaction.
 - **Browser half:** the registrations, the shared store, the chip and dialog markup, the offline state, and the markdown safety rules (raw HTML renders as text, no `javascript:` hrefs, external links open with `noopener`).
 
+**`scripts/team-smoke.mjs`** needs a knowledgeAgent checkout (`WIKI_FIXTURE`, else `../knowledgeAgent`) and Python. A bare repository with `okf/payments` (knowledgeAgent's bundle, one page stamped reviewed by `alice`) plays the team wiki; git reaches it under a GitHub URL through `url.<file>.insteadOf`, and a local HTTP server stands in for the GitHub API. It covers connect, review counts, Preview, Maintain (and reuse), the team rules in the prompt context, Open pull request (an eligible new page with its `index.md`/`log.md` lines and a stray change left out; then a reviewed page edited without reset, which is reset and needs a person; then a lint failure that commits nothing), the PR list and its verdicts, `lib/check-pr.js` agreeing in both cases, New project wiki with its setup pull request, and a merge that closes the workspace so Maintain starts fresh.
+
 **`scripts/harness-check.mjs`** applies the built Host module next to DSH's real `SystemPrompt` and `ToolRuntime`, provided by sibling plugins as in the Harness. It checks that the module applies under strict injection, that `assemble({ agent })` carries the bundle for the right session only, and that no `okf_*` tool reaches the real registry. It also checks that disposal removes everything.
 
 ```sh
 DSH_ROOT=D:/project/dsh node --import file:///D:/project/dsh/node_modules/tsx/dist/esm/index.mjs scripts/harness-check.mjs
 ```
 
-**`scripts/preview-server.mjs`** serves the built UI at `http://127.0.0.1:4317/`, backed by the real Host routes and real git. Add `?dark` for the dark theme and `?lang=zh` for Chinese. With `DSH_ROOT` set it uses DSH's own theme CSS.
+**`scripts/preview-server.mjs`** serves the built UI at `http://127.0.0.1:4317/`, backed by the real Host routes and real git, with a stand-in sidebar that holds the Team Wiki entry. Add `?panel=okf-team-wiki` to open the Team Wiki page, `?dark` for the dark theme and `?lang=zh` for Chinese; `--github-api <url>` points the Team Wiki at another GitHub API. With `DSH_ROOT` set it uses DSH's own theme CSS.
 
 ## Not verified yet
+
+- **The Team Wiki page has not run in the live Harness yet.** The `main` + `sidebar.panellist` registration is the one dsh-ado-stories uses for User stories; `layout.selectPanel(null)` before `openSession` is meant to leave the page for the new session. Against a real GitHub repository only the stand-in API was used: opening a pull request, labels, check runs and `refs/pull/<n>/head` fetches are untested live. The GitHub REST calls use `Bearer`; the git push uses Basic `x-access-token`, which GitHub accepts for both classic and fine-grained tokens.
 
 - **Editing in place has not run in the live Harness yet.** The workspace services did: an earlier build (which cloned a separate copy) registered the workspace, DSH opened a session in it, and the bundle was attached, all from an out-of-tree bundle. Pushing from an edited bundle has not been tried.
 

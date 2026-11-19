@@ -75,6 +75,21 @@ await build({
   sourcemap: false,
 })
 
+// The Team Wiki's CI checker: copied into the wiki repository as
+// .github/wiki/check-pr.js and run by examples/wiki-auto-merge.yml.
+await build({
+  cwd: root,
+  entry: { 'check-pr': 'src/check-pr.ts' },
+  outDir: 'lib',
+  format: ['esm'],
+  platform: 'node',
+  target: 'es2022',
+  fixedExtension: false,
+  clean: false,
+  dts: false,
+  sourcemap: false,
+})
+
 // Browser half: the registered lazy factory.
 await build({
   cwd: root,

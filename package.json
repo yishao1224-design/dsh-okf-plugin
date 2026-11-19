@@ -2,7 +2,7 @@
   "name": "@local/dsh-okf",
   "version": "0.1.0",
   "private": true,
-  "description": "DeepSeek Harness plugin for OKF knowledge bundles: fetch from git / Azure DevOps, preview, and attach a bundle to a chat session",
+  "description": "DeepSeek Harness plugin for OKF knowledge bundles: fetch from git / Azure DevOps, preview, attach a bundle to a chat session, and manage a team's project wikis from the Team Wiki sidebar page",
   "type": "module",
   "exports": {
     ".": "./lib/index.js",
@@ -11,13 +11,15 @@
   "files": [
     "lib/index.js",
     "lib/client.js",
+    "lib/check-pr.js",
+    "examples/wiki-auto-merge.yml",
     "cordis.patch.yml",
     "README.md"
   ],
   "scripts": {
     "build": "node build.mjs",
     "typecheck": "tsc --noEmit",
-    "smoke": "node scripts/smoke.mjs"
+    "smoke": "node scripts/smoke.mjs && node scripts/team-smoke.mjs"
   },
   "dsh": {
     "bundle": {

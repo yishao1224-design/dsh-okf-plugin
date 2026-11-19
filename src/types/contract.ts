@@ -9,7 +9,8 @@
  * - `packages/core/system-prompt/src/index.ts` — `systemPrompt.context(PromptContext)`.
  * - `packages/core/agent/src/runtime-types.ts` — `Agent` (`id`, `session.header`).
  * - `packages/client/ui-conversation/src/client/contract/slots.ts` — `conversation.session.header.utilities`.
- * - `packages/client/ui-layout` — `shell.overlay`.
+ * - `packages/client/ui-layout/src/client/index.ts` — `main` (keyed), `shell.overlay`, `layout.selectPanel`.
+ * - `packages/client/ui-sidebar/src/client/contract/slots.ts` — `sidebar.panellist`.
  * - `packages/api/workspace-controller/src/client/service.ts` — `workspaces` (`create`, `list`).
  * - `packages/client/ui-workspace/src/client/navigation.ts` — `uiWorkspace` (`connectWorkspace`, `openSession`).
  *
@@ -88,6 +89,10 @@ export interface HostScope {
 
 /** Slot keys this bundle contributes to. */
 export interface SlotMap {
+  /** The main column; keyed panels are shown by `layout.selectPanel(key)`. */
+  'main': { kind: 'keyed', scope: 'root' }
+  /** Global panel entries in the sidebar; each list `id` addresses the matching `main` key. The sidebar owns the button and its label. */
+  'sidebar.panellist': { kind: 'list', scope: 'root' }
   /** Frame-wide floating layer: absolute over every column, click-through. */
   'shell.overlay': { kind: 'list', scope: 'root' }
   /** Compact controls at the right of a session's header. Not rendered while the session is blank. */
@@ -111,10 +116,27 @@ export interface SlotComponent {
 export interface RegisterOptions<Injected extends object = Record<string, unknown>> {
   name: SlotKey
   id?: string
+  /** Keyed slots (`main`): the panel key. */
+  key?: string
   order?: number
   locale?: string
+  /** Label the owner reads (`sidebar.panellist`). */
+  label?: () => string
   /** For a session slot the factory receives the session id. */
   inject?: (sessionId?: string) => Injected
+}
+
+/** Props the sidebar hands a `sidebar.panellist` occupant. */
+export interface PanelIconProps {
+  /** Requested glyph edge in pixels. */
+  readonly size: number
+  readonly selected?: boolean
+}
+
+/** The `layout` client service, reduced to panel selection. */
+export interface LayoutService {
+  /** Show a `main` panel by key; null returns to the Conversation. */
+  selectPanel(panelId: string | null): void
 }
 
 /** One registered DSH Workspace, as the `workspaces` service reports it. */
@@ -148,6 +170,7 @@ export interface UiWorkspaceService {
 export interface ClientScope {
   readonly workspaces: WorkspacesService
   readonly uiWorkspace: UiWorkspaceService
+  readonly layout: LayoutService
   effect(callback: () => (() => void) | void, label?: string): () => void
 }
 
@@ -166,5 +189,7 @@ export interface ClientContext {
   locale: {
     register(namespace: string, dictionaries: Readonly<Record<string, Readonly<Record<string, string>>>>): () => void
     getLocale(): { active: string }
+    /** A translate seat for one namespace. */
+    bind(namespace: string): Translate
   }
 }
