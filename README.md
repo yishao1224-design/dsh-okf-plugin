@@ -101,7 +101,7 @@ The **Team Wiki** entry in the sidebar (under User stories) opens a page in the 
 
 ```text
  Team Wiki · github.acme.com/acme/team-wiki (main)  [Refresh] [Change repository] [+ New project wiki]
- Project wikis | All bundles
+ Project wikis | Local library
  ┌──────────────────────┬────────────────────────────────────────────────────────────────┐
  │ Onboarding           │ Payments  payments/                   [Open workspace] [Preview] │
  │ onboarding/ · @dan   │ Card and wallet payments                                       │
@@ -161,7 +161,7 @@ Connect the hub once on the page (URL, optional base branch, wiki folder), or pr
 
 **New project wiki** takes a name, a folder, the code repository URL, an owner, a one-line summary and a starting `SCHEMA.md` (copied from an existing wiki, or `okf.py`'s default). It adds the project's row to the `AGENTS.md` registry (creating the section, and listing the bundles already there, when the hub has none yet). It makes a workspace on `wiki/new-<folder>-<hex>`, runs `okf.py init` and `index` for the new folder (and drops what `init` touched outside it), writes `wiki_name: <name>` into `SCHEMA.md`, opens the setup as the first pull request (a new `SCHEMA.md` and the registry change always need a person), and opens a session in the workspace. The wiki joins the list once that pull request merges.
 
-**Preview** adds the wiki as it is on the base branch to the library (read-only) and opens it in the OKF dialog; any session can then attach it from the OKF chip. **All bundles** lists the whole library.
+**Preview** adds the wiki as it is on the base branch to the library (read-only) and opens it in the OKF dialog; any session can then attach it from the OKF chip. **Local library** lists every bundle on this machine: fetched, local folders, previews and maintenance workspaces (the same list the OKF chip attaches from).
 
 **Tokens.** Pushing and opening pull requests use `DSH_OKF_GITHUB_TOKEN` (or `DSH_OKF_GIT_TOKEN`), as a git `http.extraHeader` through `GIT_CONFIG_*` and as a `Bearer` header to the REST API, never in argv, a URL or a config file. Without a token the branch is still pushed when git's own credentials allow it, and the page says the pull request could not be opened. For **GitHub Enterprise** set `team.githubHost` (for example `github.acme.com`); the API defaults to `https://<host>/api/v3`. An Azure DevOps hub works for Maintain, New project wiki and pushing, but its pull requests are not listed or opened.
 
