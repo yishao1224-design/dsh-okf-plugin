@@ -315,6 +315,13 @@ export const handlers: Readonly<Record<string, { methods: readonly ('GET' | 'POS
       return json(await team.maintain(required(record, 'folder')))
     }),
   },
+  [ROUTES.teamPublish]: {
+    methods: ['POST'],
+    handle: route(['POST'], async (request, { team }) => {
+      const record = await body(request)
+      return json(await team.publish(required(record, 'folder')))
+    }),
+  },
   [ROUTES.teamChanges]: {
     methods: ['GET'],
     handle: route(['GET'], async (request, { team }) => {

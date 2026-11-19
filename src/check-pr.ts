@@ -23,6 +23,7 @@ import { execFileSync } from 'node:child_process'
 import { appendFileSync } from 'node:fs'
 import { judge } from './host/eligibility.ts'
 import type { ChangedFile } from './host/eligibility.ts'
+import { adoName, publishedProject } from './host/publish.ts'
 import { parseRegistry } from './host/registry.ts'
 import { describeReview } from './host/review.ts'
 
@@ -94,8 +95,8 @@ try {
   const rootIsWiki = registry.length === 0 && existsAt(refs, `${prefix}SCHEMA.md`)
   const slug = (value: string): string => value.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '')
   const wikiOf = (path: string): string | undefined => {
-    const published = /^published\/Projects\/([^/]+)\//.exec(path)
-    if (published !== null) return registry.find(entry => entry.project === published[1] || slug(entry.project) === slug(published[1] ?? ''))?.bundle
+    const published = publishedProject(path)
+    if (published !== undefined) return registry.find(entry => adoName(entry.project) === published || slug(entry.project) === slug(published))?.bundle
     const folders = [...registry.map(entry => entry.bundle), ...added].sort((a, b) => b.length - a.length)
     const match = folders.find(folder => path.startsWith(`${folder}/`))
     if (match !== undefined || registry.length > 0) return match

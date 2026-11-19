@@ -64,11 +64,13 @@ export function judge(bundleDir: string, files: readonly ChangedFile[]): Verdict
   const reasons: string[] = []
   const pages: PageChange[] = []
   if (files.length === 0) reasons.push('the change is empty')
+  const published = files.filter(file => file.path.startsWith('published/')).map(file => file.path)
+  if (published.length > 0) {
+    const shown = published.slice(0, 3).join(', ')
+    reasons.push(`changes ${published.length === 1 ? 'the published page' : `${String(published.length)} published pages`} (${shown}${published.length > 3 ? ', …' : ''}); pages published for people are reviewed by a person`)
+  }
   for (const file of files) {
-    if (file.path.startsWith('published/')) {
-      reasons.push(`changes the published page ${file.path}; pages published for people are reviewed by a person`)
-      continue
-    }
+    if (file.path.startsWith('published/')) continue
     if (file.path === 'AGENTS.md') {
       reasons.push('changes AGENTS.md, the project registry')
       continue

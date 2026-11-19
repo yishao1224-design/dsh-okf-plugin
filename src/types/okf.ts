@@ -168,6 +168,7 @@ export const ROUTES = {
   teamPulls: `${API_BASE}/team/pulls`,
   teamCreate: `${API_BASE}/team/create`,
   teamMaintain: `${API_BASE}/team/maintain`,
+  teamPublish: `${API_BASE}/team/publish`,
   teamChanges: `${API_BASE}/team/changes`,
   teamOpenPr: `${API_BASE}/team/open-pr`,
   teamAttach: `${API_BASE}/team/attach`,
@@ -331,6 +332,22 @@ export interface MaintainAnswer {
   readonly workspace: string
   readonly created: boolean
   /** New project wiki opens its first pull request right away; this says how that went. */
+  readonly pr?: OpenPrAnswer
+  readonly prError?: string
+}
+
+/** What Publish did. */
+export interface PublishAnswer {
+  readonly record: MaintainRecord
+  /** A maintenance workspace was made for it. */
+  readonly created: boolean
+  /** The project's published folder, e.g. `published/Projects/Payments`. */
+  readonly dir: string
+  /** Pages written, the landing page and folder pages included. */
+  readonly pages: number
+  readonly skipped: readonly { readonly path: string, readonly reason: string }[]
+  /** The published pages already match the bundle. */
+  readonly unchanged?: boolean
   readonly pr?: OpenPrAnswer
   readonly prError?: string
 }

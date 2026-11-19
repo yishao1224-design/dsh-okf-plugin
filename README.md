@@ -155,6 +155,17 @@ Connect the hub once on the page (URL, optional base branch, wiki folder), or pr
 
 **CI decides, not the label.** `examples/wiki-auto-merge.yml` is a workflow for the hub repository: it re-runs the same eligibility check with `lib/check-pr.js` and `okf.py lint`, both taken **from the base branch** so a pull request cannot weaken the rules that judge it, and only then turns on GitHub auto-merge. Copy `lib/check-pr.js` to `.github/wiki/check-pr.js` in the hub, enable "Allow auto-merge", and require the job in branch protection. The checker maps each changed file to a project through the registry (on either side of the change), so a pull request must touch exactly one project.
 
+**Publish** (the plugin's kb-publish) is a button next to Maintain. It renders the project's bundle, as it is in its maintenance workspace (made when there is none), into Azure DevOps wiki pages and adds them to that workspace's pull request:
+
+- `published/Projects/<Project>.md` is the landing page: summary, owner and code repository from the registry, then `index.md` with its links rewritten. `published/Projects/<Project>/` holds one page per concept, in the bundle's folders (`Concepts/`, `Entities/` …), plus a page per folder listing its pages.
+- File names follow the wiki's rules from each page's `title` (space → `-`; `-`, `:` and the like percent-encoded), so the wiki shows real titles.
+- Frontmatter is dropped. Under the title each page says **Reviewed by alice on …**, **Unreviewed** (with who wrote it) or **Due for re-review**. A footer links the source file in the hub and says to edit the bundle, not the page.
+- Links between published pages become wiki paths (`/Projects/Payments/Concepts/The-Knowledge-Lifecycle`); links to other bundle files (`SCHEMA.md`, captures) go to the file in the hub; broken links become plain text.
+- `index.md`, `log.md`, `SCHEMA.md`, `sources/`, `archive/` and deprecated or archived pages are not published.
+- The project's published folder and landing page are regenerated as a whole, so a page removed from the bundle leaves the wiki too; other projects' pages are untouched. Rendering has no clock in it: publishing an unchanged bundle reports "already match" and proposes nothing.
+
+A published change always needs a person, so the pull request is never auto-merged.
+
 **Publishing to the Azure DevOps wiki.** `examples/wiki-publish-to-ado.yml` runs when a merge to `main` changes `published/Projects/**`. It clones the existing ADO wiki repository (`vars.ADO_WIKI_REPO`, branch `vars.ADO_WIKI_BRANCH`, default `wikiMaster`) with `secrets.ADO_WIKI_PAT`, mirrors `published/Projects/` into its `Projects/` folder, and pushes. It refuses to commit if anything outside `Projects/` changed, so hand-written wiki pages are never touched. Since every change under `published/` needs a person, nothing reaches the ADO wiki without a review.
 
 **The pull request list** reads open pull requests from GitHub (title, author, labels, checks), fetches their branches into the clone, and computes the files and the verdict from git with the same rule. A pull request appears under every project wiki it touches; one that touches no wiki is not listed.
@@ -165,7 +176,7 @@ Connect the hub once on the page (URL, optional base branch, wiki folder), or pr
 
 **Tokens.** Pushing and opening pull requests use `DSH_OKF_GITHUB_TOKEN` (or `DSH_OKF_GIT_TOKEN`), as a git `http.extraHeader` through `GIT_CONFIG_*` and as a `Bearer` header to the REST API, never in argv, a URL or a config file. Without a token the branch is still pushed when git's own credentials allow it, and the page says the pull request could not be opened. For **GitHub Enterprise** set `team.githubHost` (for example `github.acme.com`); the API defaults to `https://<host>/api/v3`. An Azure DevOps hub works for Maintain, New project wiki and pushing, but its pull requests are not listed or opened.
 
-**Still to do in knowledgeAgent** (the plugin only reads and writes the layout above): a `kb-publish` skill that renders a bundle into `published/Projects/<Project>/`; `kb-ingest` finding the bundle through the hub's registry and opening its pull request against the hub; and the hub's own `AGENTS.md` rules.
+**Still to do in knowledgeAgent** (the plugin only reads and writes the layout above): `kb-ingest` finding the bundle through the hub's registry and opening its pull request against the hub, and the hub's own `AGENTS.md` rules.
 
 ## How the agent uses the bundle
 
@@ -273,7 +284,7 @@ npm run smoke      # smoke.mjs, team-smoke.mjs, hub-smoke.mjs
 
 **`scripts/team-smoke.mjs`** needs a knowledgeAgent checkout (`WIKI_FIXTURE`, else `../knowledgeAgent`) and Python. A bare repository with `okf/payments` (knowledgeAgent's bundle, one page stamped reviewed by `alice`) plays the team wiki; git reaches it under a GitHub URL through `url.<file>.insteadOf`, and a local HTTP server stands in for the GitHub API. It covers connect, review counts, Preview, Maintain (and reuse), the team rules in the prompt context, Open pull request (an eligible new page with its `index.md`/`log.md` lines and a stray change left out; then a reviewed page edited without reset, which is reset and needs a person; then a lint failure that commits nothing), the PR list and its verdicts, `lib/check-pr.js` agreeing in both cases, New project wiki with its setup pull request, and a merge that closes the workspace so Maintain starts fresh.
 
-**`scripts/hub-smoke.mjs`** covers the hub layout on a GitHub Enterprise host (`github.acme.com`, API under `/api/v3`): the registry drives the project list (summary, owner, repo link, a registered but missing folder, publish status), a new page is eligible, a change under `published/Projects/Payments/` goes in the same pull request and needs a person while another project's published page is left out, New project wiki adds a registry row (with `|` escaped) in the same pull request, a registered name is refused, and `lib/check-pr.js` maps every case through the registry.
+**`scripts/hub-smoke.mjs`** covers the hub layout on a GitHub Enterprise host (`github.acme.com`, API under `/api/v3`): the registry drives the project list (summary, owner, repo link, a registered but missing folder, publish status), a new page is eligible, a change under `published/Projects/Payments/` goes in the same pull request and needs a person while another project's published page is left out, New project wiki adds a registry row (with `|` escaped) in the same pull request, a registered name is refused, Publish (into the same pull request, the landing page and folder pages, review lines, rewritten links, a stale published page removed, another project's left alone, an unchanged bundle proposing nothing), and `lib/check-pr.js` maps every case through the registry.
 
 **`scripts/harness-check.mjs`** applies the built Host module next to DSH's real `SystemPrompt` and `ToolRuntime`, provided by sibling plugins as in the Harness. It checks that the module applies under strict injection, that `assemble({ agent })` carries the bundle for the right session only, and that no `okf_*` tool reaches the real registry. It also checks that disposal removes everything.
 
@@ -284,6 +295,8 @@ DSH_ROOT=D:/project/dsh node --import file:///D:/project/dsh/node_modules/tsx/di
 **`scripts/preview-server.mjs`** serves the built UI at `http://127.0.0.1:4317/`, backed by the real Host routes and real git, with a stand-in sidebar that holds the Team Wiki entry. Add `?panel=okf-team-wiki` to open the Team Wiki page, `?dark` for the dark theme and `?lang=zh` for Chinese; `--github-api <url>` points the Team Wiki at another GitHub API. With `DSH_ROOT` set it uses DSH's own theme CSS.
 
 ## Not verified yet
+
+- **Published pages have not been opened in a real Azure DevOps wiki.** The file names follow Microsoft's documented title rules, but how the wiki resolves links to pages whose names hold an encoded character (for example `%2D` for a hyphen in a title) is untested. Run Publish once against a test wiki and check those links.
 
 - **The Team Wiki page has not run in the live Harness yet.** The `main` + `sidebar.panellist` registration is the one dsh-ado-stories uses for User stories; `layout.selectPanel(null)` before `openSession` is meant to leave the page for the new session. Against a real GitHub repository only the stand-in API was used: opening a pull request, labels, check runs and `refs/pull/<n>/head` fetches are untested live. The GitHub REST calls use `Bearer`; the git push uses Basic `x-access-token`, which GitHub accepts for both classic and fine-grained tokens.
 

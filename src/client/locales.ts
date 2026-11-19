@@ -183,6 +183,14 @@ export const zh = {
   'team.newRepo': "代码仓库 URL",
   'team.newOwner': "负责人",
   'team.newSummary': "一句话简介",
+  'team.publish': "发布",
+  'team.publishHint': "把这个 Wiki 渲染到 published/Projects/，供 Azure DevOps Wiki 使用，并开一个 PR 等人审",
+  'team.publishing': "发布中…",
+  'team.publishDone': "已把 {pages} 个页面渲染到 {dir}。PR #{number} 等人审核，合并后同步到 Azure DevOps Wiki。",
+  'team.publishPushed': "已把 {pages} 个页面渲染到 {dir}，推送到分支 {branch}。",
+  'team.publishUnchanged': "{dir} 里的发布页面已经和 bundle 一致，没有要提交的。",
+  'team.publishFailed': "已把 {pages} 个页面渲染到 {dir}，但 PR 没开成：",
+  'team.publishSkipped': "（{count} 个页面没发布：源文件、已废弃或记录类页面）",
 } as const
 
 /** English dictionary, key-identical to the Chinese source of truth. */
@@ -365,6 +373,14 @@ export const en: Record<OkfKey, string> = {
   'team.newRepo': "Code repository URL",
   'team.newOwner': "Owner",
   'team.newSummary': "One-line summary",
+  'team.publish': "Publish",
+  'team.publishHint': "Render this wiki into published/Projects/ for the Azure DevOps wiki and open a pull request for a person to review",
+  'team.publishing': "Publishing…",
+  'team.publishDone': "Rendered {pages} pages into {dir}. Pull request #{number} waits for a person's review; once merged they sync to the Azure DevOps wiki.",
+  'team.publishPushed': "Rendered {pages} pages into {dir} and pushed them on {branch}.",
+  'team.publishUnchanged': "The published pages in {dir} already match the bundle; nothing to propose.",
+  'team.publishFailed': "Rendered {pages} pages into {dir}, but the pull request was not opened:",
+  'team.publishSkipped': "({count} files not published: source captures, deprecated pages and bookkeeping.)",
 }
 
 /** Key domain of the `okf` namespace (zh is the source of truth). */

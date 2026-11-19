@@ -233,7 +233,7 @@ function WikisTab({ store, state, data, t, onCreate }: { readonly store: OkfStor
  */
 function WikiDetailPane({ store, state, data, wiki, t }: { readonly store: OkfStore, readonly state: OkfState, readonly data: TeamStatus, readonly wiki: ProjectWiki, readonly t: T }): ReactNode {
   const [tab, setTab] = useState<'pulls' | 'pages' | 'review'>('pulls')
-  const [busy, setBusy] = useState<'maintain' | 'preview' | undefined>(undefined)
+  const [busy, setBusy] = useState<'maintain' | 'preview' | 'publish' | undefined>(undefined)
   const [error, setError] = useState<string | undefined>(undefined)
   const detail = state.team.wikis[wiki.folder]
   useEffect(() => {
@@ -247,6 +247,26 @@ function WikiDetailPane({ store, state, data, wiki, t }: { readonly store: OkfSt
     store.maintainWiki(wiki.folder).then((outcome) => {
       setBusy(undefined)
       if (!outcome.opened) setError(manualText(outcome, t))
+    }, (failure: unknown) => {
+      setBusy(undefined)
+      setError((failure as Error).message)
+    })
+  }
+  const publish = (): void => {
+    setBusy('publish')
+    setError(undefined)
+    store.publishWiki(wiki.folder).then((answer) => {
+      setBusy(undefined)
+      const skipped = answer.skipped.length === 0 ? '' : ` ${t('team.publishSkipped', { count: answer.skipped.length })}`
+      if (answer.prError !== undefined) {
+        store.setNotice({ kind: 'error', text: `${t('team.publishFailed', { pages: answer.pages, dir: answer.dir })}\n${answer.prError}` })
+      } else if (answer.unchanged === true) {
+        store.setNotice({ kind: 'ok', text: t('team.publishUnchanged', { dir: answer.dir }) })
+      } else if (answer.pr?.pr !== undefined) {
+        store.setNotice({ kind: 'ok', text: `${t('team.publishDone', { pages: answer.pages, dir: answer.dir, number: answer.pr.pr.number })}${skipped}` })
+      } else {
+        store.setNotice({ kind: 'ok', text: `${t('team.publishPushed', { pages: answer.pages, dir: answer.dir, branch: answer.record.branch })}${skipped}${answer.pr?.notes.length ? `\n${answer.pr.notes.join('\n')}` : ''}` })
+      }
     }, (failure: unknown) => {
       setBusy(undefined)
       setError((failure as Error).message)
@@ -290,6 +310,7 @@ function WikiDetailPane({ store, state, data, wiki, t }: { readonly store: OkfSt
           <Button variant="primary" disabled={busy !== undefined || wiki.missing === true} title={t('team.maintainHint')} onClick={maintain}>
             {busy === 'maintain' ? t('team.opening') : record === undefined ? t('team.maintain') : t('team.maintainOpen')}
           </Button>
+          <Button disabled={busy !== undefined || wiki.missing === true} title={t('team.publishHint')} onClick={publish}>{busy === 'publish' ? t('team.publishing') : t('team.publish')}</Button>
           <Button disabled={busy !== undefined || wiki.missing === true} title={t('team.previewHint')} onClick={preview}>{busy === 'preview' ? t('preview.loading') : t('team.preview')}</Button>
         </div>
       </div>

@@ -40,13 +40,15 @@ import type { ChangedFile } from './eligibility.ts'
 import { parsePage, text as metaText } from './frontmatter.ts'
 import { parseRemote } from './git.ts'
 import { addRegistryRow, parseRegistry } from './registry.ts'
+import { adoName, publishedDir, publishedProject, renderBundle, webUrl } from './publish.ts'
+import type { BundleFile } from './publish.ts'
 import { GitHub, parseGitHubRemote } from './github.ts'
 import { canonical, cleanRepoPath, LibraryError, TOKEN_ENV } from './library.ts'
 import type { Library } from './library.ts'
 import { describeReview, joinPage, reviewState, setKeys, splitPage, stampAgentEdit, today } from './review.ts'
 import { run, RunError } from './run.ts'
 import type {
-  ChangedPage, ChangesAnswer, GitProvider, LibraryEntry, MaintainAnswer, MaintainRecord, OpenPrAnswer, ProjectWiki,
+  ChangedPage, ChangesAnswer, GitProvider, LibraryEntry, MaintainAnswer, MaintainRecord, OpenPrAnswer, ProjectWiki, PublishAnswer,
   PullsAnswer, PullView, TeamConfig, TeamStatus, WikiDetail, WikiPage, WikiStats,
 } from '../types/okf.ts'
 
@@ -95,6 +97,8 @@ export interface Team {
   maintain(folder: string): Promise<MaintainAnswer>
   changes(id: string): Promise<ChangesAnswer>
   openPr(id: string, request: { title?: string, summary?: string }): Promise<OpenPrAnswer>
+  /** kb-publish: render the bundle into published/Projects/ and open its pull request. */
+  publish(folder: string): Promise<PublishAnswer>
   /**
    * A read-only library entry for a project wiki on the base branch (the
    * `main/` checkout), so any session can attach it from the OKF chip.
@@ -123,14 +127,7 @@ export interface CreateRequest {
   readonly summary?: string
 }
 
-/**
- * Where kb-publish puts a project's pages for people.
- * @param name - the project name as registered.
- * @returns the repository-relative folder.
- */
-export function publishedDir(name: string): string {
-  return `published/Projects/${name.replace(/[\\/]/g, '-')}`
-}
+export { publishedDir } from './publish.ts'
 
 /** Folders inside a bundle that are never project wikis of their own. */
 const BUNDLE_PARTS = new Set(['concepts', 'entities', 'comparisons', 'queries', 'archive', 'sources'])
@@ -454,8 +451,8 @@ export function openTeam(options: TeamOptions): Team {
   /** When a project's published pages last changed on the base branch. */
   const publishedOf = async (name: string): Promise<ProjectWiki['published']> => {
     const path = publishedDir(name)
-    if (!(await exists(join(mainDir, ...path.split('/'))))) return undefined
-    const updated = await git(mainDir, ['log', '-1', '--format=%cs', '--', path]).catch(() => '')
+    if (!(await exists(join(mainDir, ...path.split('/')))) && !(await isFile(join(mainDir, ...`${path}.md`.split('/'))))) return undefined
+    const updated = await git(mainDir, ['log', '-1', '--format=%cs', '--', path, `${path}.md`]).catch(() => '')
     return { path, ...updated === '' ? {} : { updated } }
   }
 
@@ -574,10 +571,9 @@ export function openTeam(options: TeamOptions): Team {
   /** Which project wiki a repository path belongs to, if any. */
   const wikiOfPath = (path: string, projects: readonly ProjectInfo[], added: readonly string[]): string | undefined => {
     // Pages kb-publish rendered for a project belong to that project.
-    const published = /^published\/Projects\/([^/]+)\//.exec(path)
-    if (published !== null) {
-      const name = published[1] ?? ''
-      return projects.find(project => project.name === name || wikiSlug(project.name) === wikiSlug(name))?.folder
+    const published = publishedProject(path)
+    if (published !== undefined) {
+      return projects.find(project => adoName(project.name) === published || wikiSlug(project.name) === wikiSlug(published))?.folder
     }
     // A wiki the pull request adds is not on the base branch yet: its new SCHEMA.md marks it.
     const known = [...projects.map(project => project.folder), ...added]
@@ -860,7 +856,7 @@ export function openTeam(options: TeamOptions): Team {
     const base = baseOf(data)
     const prefix = `${record.wiki}/`
     // What a wiki pull request may carry: the bundle, the project's published pages, and (for a new project) its registry row.
-    const scope = [record.wiki, publishedDir(record.wikiName), ...record.isNew === true ? ['AGENTS.md'] : []]
+    const scope = [record.wiki, publishedDir(record.wikiName), `${publishedDir(record.wikiName)}.md`, ...record.isNew === true ? ['AGENTS.md'] : []]
     const inScope = (path: string): boolean => scope.some(item => path === item || path.startsWith(`${item}/`))
     const notes: string[] = []
     const title = request.title?.trim() || (record.pr === undefined ? `Update the ${record.wikiName} wiki` : '')
@@ -992,7 +988,74 @@ export function openTeam(options: TeamOptions): Team {
     })
   }
 
-  return { status, connect, refresh, wiki, pulls, create, maintain, changes, openPr, attach }
+  /**
+   * kb-publish: render the project's bundle (as it is in its maintenance
+   * workspace, made when there is none) into published/Projects/, then open or
+   * update the workspace's pull request. A published change always needs a person.
+   */
+  const publish = async (folder: string): Promise<PublishAnswer> => {
+    const prepared = await serial(async () => {
+      const data = await load()
+      const team = needTeam(data)
+      const project = (await projectsIn(mainDir, team)).find(candidate => candidate.folder === folder)
+      if (project === undefined) throw new LibraryError('unknown-wiki', `There is no project wiki at ${folder}. Refresh, or create it.`, 404)
+      let record = data.maintains.find(item => item.wiki === folder && item.closed === undefined)
+      let created = false
+      if (record === undefined || !(await exists(join(record.workspace, '.git')))) {
+        if (record !== undefined) Object.assign(record, { closed: 'closed' })
+        if (!(await exists(join(mainDir, ...folder.split('/'))))) throw new LibraryError('unknown-wiki', `${folder} is registered but not in the repository yet.`, 404)
+        record = await newWorkspace(data, folder, project.name, false)
+        await save(data)
+        created = true
+      }
+      const bundle = join(record.workspace, ...folder.split('/'))
+      const files: BundleFile[] = []
+      const walk = async (dir: string, rel: string): Promise<void> => {
+        for (const entry of await readdir(dir, { withFileTypes: true })) {
+          if (entry.name.startsWith('.')) continue
+          const path = rel === '' ? entry.name : `${rel}/${entry.name}`
+          if (entry.isDirectory()) await walk(join(dir, entry.name), path)
+          else if (entry.isFile()) files.push({ path, source: entry.name.endsWith('.md') ? await readFile(join(dir, entry.name), 'utf8') : '' })
+        }
+      }
+      await walk(bundle, '')
+      const rendered = renderBundle(files, {
+        name: project.name,
+        folder,
+        hubWeb: webUrl(team.url),
+        branch: baseOf(data),
+        ...project.summary === undefined ? {} : { summary: project.summary },
+        ...project.owner === undefined ? {} : { owner: project.owner },
+        ...project.repo === undefined ? {} : { repo: project.repo },
+      })
+      // The project's published pages are regenerated as a whole: a page that is gone from the bundle goes from the wiki too.
+      await rm(join(record.workspace, ...rendered.dir.split('/')), { recursive: true, force: true })
+      await rm(join(record.workspace, ...rendered.landing.split('/')), { force: true })
+      for (const page of rendered.pages) {
+        const target = join(record.workspace, ...page.path.split('/'))
+        await mkdir(join(target, '..'), { recursive: true })
+        await writeFile(target, page.content)
+      }
+      await options.library.put(entryFor(record))
+      const pending = await git(record.workspace, ['status', '--porcelain', '--untracked-files=all', '--', rendered.dir, rendered.landing])
+      return { record, created, dir: rendered.dir, pages: rendered.pages.length, skipped: rendered.skipped, ...pending === '' ? { unchanged: true } : {} }
+    })
+    const { record } = prepared
+    if (prepared.unchanged === true) return prepared
+    try {
+      const pr = await openPr(record.id, {
+        ...record.pr === undefined ? { title: `Publish ${record.wikiName} to the wiki` } : {},
+        summary: `Renders \`${record.wiki}/\` into \`${prepared.dir}/\` for the Azure DevOps wiki. A person reviews published pages before they are synced.`,
+      })
+      const fresh = (await load()).maintains.find(item => item.id === record.id) ?? record
+      return { ...prepared, record: fresh, pr }
+    } catch (error) {
+      if (error instanceof LibraryError && error.code === 'nothing-changed') return { ...prepared, unchanged: true }
+      return { ...prepared, prError: (error as Error).message }
+    }
+  }
+
+  return { status, connect, refresh, wiki, pulls, create, maintain, changes, openPr, attach, publish }
 }
 
 /**

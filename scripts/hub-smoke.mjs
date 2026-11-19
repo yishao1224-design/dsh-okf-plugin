@@ -190,6 +190,24 @@ check(ci.status === 1 && ci.stdout.includes('project wiki: payments') && ci.stdo
 let list = must(await api('/api/okf/team/pulls', { query: { refresh: '1' } }), 'pulls')
 check(list.pulls.length === 1 && list.pulls[0].wikis.join() === 'payments' && list.pulls[0].eligible === false, `pulls: ${JSON.stringify(list.pulls)}`)
 
+// ── Publish: render the bundle into published/Projects/ in the same workspace and PR ──
+let published = must(await api('/api/okf/team/publish', { method: 'POST', body: { folder: 'payments' } }), 'publish')
+const pub = join(ws, 'published', 'Projects')
+check(published.created === false && published.record.id === record.id && published.dir === 'published/Projects/Payments' && published.pr?.pr?.number === 1 && published.pr.pr.reused === true && published.pr.eligible === false, `publish reuses the workspace and PR: ${JSON.stringify({ ...published, skipped: published.skipped.length })}`)
+check(published.pr.files.includes('published/Projects/Payments.md') && published.pr.files.includes('published/Projects/Payments/Concepts/Refunds.md') && published.pr.files.includes('published/Projects/Payments/Concepts.md'), `published files: ${published.pr.files.filter(path => path.startsWith('published/')).join(', ')}`)
+check(!existsSync(join(pub, 'Payments', 'Overview.md')) && existsSync(join(pub, 'Other.md')) && !published.pr.files.includes('published/Projects/Other.md'), 'regenerates only its own folder: a stale page goes, another project stays')
+check(published.skipped.some(item => item.path.startsWith('sources/')) && !existsSync(join(pub, 'Payments', 'Sources')) && !existsSync(join(pub, 'Payments', 'Log.md')), `sources and log are not published: ${JSON.stringify(published.skipped)}`)
+const refunds = readFileSync(join(pub, 'Payments', 'Concepts', 'Refunds.md'), 'utf8')
+check(refunds.startsWith('# Refunds\n\n> **Unreviewed.** Written by dsh/smoke') && refunds.includes('[the lifecycle](/Projects/Payments/Concepts/The-Knowledge-Lifecycle)') && !refunds.includes('lifecycle: draft') && refunds.includes('https://github.com/acme/hub/blob/main/payments/concepts/refunds.md'.replace('github.com', 'github.acme.com')), `rendered page: ${refunds}`)
+check(readFileSync(join(pub, 'Payments', 'Concepts', 'The-Knowledge-Lifecycle.md'), 'utf8').includes('> **Unreviewed.**'), 'the review state is on every page')
+const landing = readFileSync(join(pub, 'Payments.md'), 'utf8')
+check(landing.startsWith('# Payments\n\nCard and wallet payments\n\nOwner: @alice · [Code repository](https://github.acme.com/pay/payments-service)') && landing.includes('](/Projects/Payments/Concepts/') && !/\]\(\/concepts\//.test(landing), `landing page: ${landing.slice(0, 900)}`)
+git(clone, 'fetch', '-q', 'origin')
+ci = checker(clone, `origin/${record.branch}`)
+check(ci.status === 1 && ci.stdout.includes('project wiki: payments') && ci.stdout.includes('published/Projects/Payments.md'), `check-pr maps the landing page: ${ci.status} ${ci.stdout} ${ci.stderr}`)
+published = must(await api('/api/okf/team/publish', { method: 'POST', body: { folder: 'payments' } }), 'publish again')
+check(published.unchanged === true && published.pr === undefined, `publishing an unchanged bundle proposes nothing: ${JSON.stringify(published.prError ?? published.unchanged)}`)
+
 // ── New project wiki: a bundle at the root plus a registry row, one PR ──
 const created = must(await api('/api/okf/team/create', { method: 'POST', body: { name: 'Settlement', template: 'copy:payments', repo: 'https://github.acme.com/pay/settlement', owner: '@carol', summary: 'Daily settlement | batches' } }), 'create')
 const nws = created.workspace
