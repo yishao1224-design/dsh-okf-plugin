@@ -1,0 +1,12 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "okf-preview",
+      "runtimeExecutable": "node",
+      "runtimeArgs": ["scripts/preview-server.mjs", "--port", "4317"],
+      "env": { "DSH_ROOT": "D:/project/dsh" },
+      "port": 4317
+    }
+  ]
+}

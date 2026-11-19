@@ -1,0 +1,44 @@
+{
+  "name": "@local/dsh-okf",
+  "version": "0.1.0",
+  "private": true,
+  "description": "DeepSeek Harness plugin for OKF knowledge bundles: fetch from git / Azure DevOps, preview, and attach a bundle to a chat session",
+  "type": "module",
+  "exports": {
+    ".": "./lib/index.js",
+    "./client": "./lib/client.js"
+  },
+  "files": [
+    "lib/index.js",
+    "lib/client.js",
+    "cordis.patch.yml",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "node build.mjs",
+    "typecheck": "tsc --noEmit",
+    "smoke": "node scripts/smoke.mjs"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "inject": [
+        "@deepseek-ai/dsh-client-locale",
+        "@deepseek-ai/dsh-client-ui-renderer",
+        "@deepseek-ai/dsh-client-ui-conversation"
+      ]
+    }
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "@types/react": "^18.3.12",
+    "react-dom": "^18.3.1",
+    "react": "^18.3.1",
+    "tsdown": "^0.22.2",
+    "typescript": "^5.6.3"
+  },
+  "license": "MIT"
+}

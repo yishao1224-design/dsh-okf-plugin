@@ -1,0 +1,78 @@
+/**
+ * Browser half of the OKF bundle plugin.
+ *
+ * - `conversation.input.right`: a compact chip in the composer's tool row that
+ *   shows the session's bundle and opens the dialog for that session. DSH draws
+ *   this row in a blank session too, where a bundle is usually chosen.
+ * - `conversation.session.header.utilities`: the same chip in the session
+ *   header, which DSH shows only once the session has messages.
+ * - `shell.overlay`: the dialog itself (library, fetch form, preview, page
+ *   reader, session selector), drawn over the frame while open.
+ *
+ * Both entries share one store. The `apply`/`inject` shape is the contract the
+ * Harness client Loader mounts; types come from `../types/contract.ts`.
+ *
+ * DSH's `workspaces` and `uiWorkspace` services (for Edit as workspace) are
+ * reached through `ctx.inject`, not the hard `inject` list, so the dialog still
+ * loads on a shell that does not provide them; Edit as workspace then hands the
+ * user the folder to add by hand.
+ */
+import type { ClientContext } from '../types/contract.ts'
+import type { WorkspaceNavigation } from './store.ts'
+import { OkfDialog, SessionChip } from './components.tsx'
+import type { OkfInjected } from './components.tsx'
+import { en, NS, zh } from './locales.ts'
+import { createOkfStore } from './store.ts'
+
+/** Required services: the slot registry and dictionaries. */
+export const inject = ['slots', 'locale']
+
+/**
+ * Client plugin body.
+ * @param ctx - client root context.
+ */
+export function apply(ctx: ClientContext): void {
+  ctx.effect(() => ctx.locale.register(NS, { zh, en }), 'okf: dictionaries')
+
+  let navigation: WorkspaceNavigation | undefined
+  ctx.inject(['workspaces', 'uiWorkspace'], (scope) => {
+    scope.effect(() => {
+      navigation = { workspaces: scope.workspaces, uiWorkspace: scope.uiWorkspace }
+      return () => { navigation = undefined }
+    }, 'okf: workspace services')
+  })
+
+  ctx.effect(() => {
+    const store = createOkfStore(undefined, () => navigation)
+    const injected = (): OkfInjected => ({ store })
+    const disposeDialog = ctx.slots.inject('shell.overlay', () => ctx.slots.register({
+      name: 'shell.overlay',
+      id: 'okf-dialog',
+      locale: NS,
+      inject: injected,
+    }, OkfDialog))
+    const disposeChip = ctx.slots.inject('conversation.session.header.utilities', () => ctx.slots.register({
+      name: 'conversation.session.header.utilities',
+      id: 'okf-bundle',
+      order: -20,
+      locale: NS,
+      inject: injected,
+    }, SessionChip))
+    const disposeComposer = ctx.slots.inject('conversation.input.right', () => ctx.slots.register({
+      name: 'conversation.input.right',
+      id: 'okf-bundle',
+      order: -20,
+      locale: NS,
+      inject: () => ({ store, compact: true }),
+    }, SessionChip))
+    return () => {
+      disposeComposer()
+      disposeChip()
+      disposeDialog()
+      store.dispose()
+    }
+  }, 'okf: session chip and dialog')
+}
+
+// Re-exported for scripts/smoke.mjs, which tests the built artifact only.
+export { bundleTarget, renderMarkdown } from './markdown.tsx'

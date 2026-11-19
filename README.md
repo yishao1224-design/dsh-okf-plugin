@@ -1,0 +1,198 @@
+# dsh-okf
+
+A DeepSeek Harness plugin for **OKF knowledge bundles** ([Open Knowledge Format](https://github.com/GoogleCloudPlatform/open-knowledge-format), v0.2): folders of markdown pages with YAML frontmatter, such as the `okf/` bundle in `knowledgeAgent`.
+
+It does three things:
+
+1. **Fetch** a bundle from a git remote (GitHub, Azure DevOps, or any git host) into a local library folder, and update it later.
+2. **Preview** any bundle in the library: stats, a filterable catalog, and a page reader.
+3. **Attach a bundle to a chat session**, so the agent in that session gets the bundle's catalog and folder each turn and reads the pages itself.
+
+Like the other `dsh_plugins` bundles it is a **standalone Harness bundle**. Nothing is imported from or written into a DSH source checkout.
+
+```text
+ session header:   … [📖 OKF · knowledgeAgent/okf]       <- chip, one per session
+                                 │ click
+ ┌───────────────────────────────▼──────────────────────────────────────────┐
+ │ OKF bundles      This session uses [knowledgeAgent/okf ▾]            ✕ │
+ ├──────────────────────┬───────────────────────────────────────────────────┤
+ │ LIBRARY              │ knowledgeAgent/okf                                │
+ │ ▸ knowledgeAgent/okf │ github.com/…/knowledgeAgent · okf                 │
+ │   GitHub · This sess │ 26 pages · OKF 0.2 · Commit 045b394b · active 13 │
+ │ ▸ team-kb            │ [Use in this session] [Update] [Remove]           │
+ │   Azure DevOps       │ ┌ Filter pages ──────────────────────────────┐   │
+ │ [＋ Add bundle]      │ CONCEPTS · 7                                      │
+ │                      │   The Knowledge Lifecycle  Concept  active        │
+ └──────────────────────┴───────────────────────────────────────────────────┘
+```
+
+## Set up
+
+**Install** with the Harness `plugin_manager` tool (needs Full access or approval; Host code runs in the Harness process):
+
+```text
+plugin_manager action=install_bundle target=file:F:\project\dsh_plugins\dsh-okf-plugin
+```
+
+**Restart `dsh web` after installing**, and after any change to `lib/index.js`. Host code loads only at startup. The browser half hot-loads, so before the restart you will see the OKF chip, but the dialog says the Host does not answer.
+
+`git` must be on the Host's `PATH`, or set `gitPath` (see Config).
+
+## Use
+
+Open a session and click **OKF**. The button sits in two places:
+
+- in the composer's tool row, just left of the model selector. It is always there, including in a blank session before the first message, which is when you usually pick a bundle;
+- in the session header, top right. DSH shows the header's utility buttons only after the session has messages.
+
+- **Add bundle → From git:** paste the repository URL, then Fetch. The branch/tag and the bundle folder are optional. Without a folder, the plugin finds the bundle itself: a folder holding a `SCHEMA.md`, or an `index.md` whose frontmatter declares `okf_version`. If the repository holds several bundles it lists them and you pick one.
+- **Add bundle → Local folder:** registers a bundle already on disk, for example `F:\project\knowledgeAgent\okf` or the project folder above it. The plugin only records the path; it never modifies or deletes a local folder.
+- **Preview:** select a bundle on the left. Filter the catalog by title, path, description or tag, and open a page to read it. Links between pages open in place.
+- **Attach to the session:** pick the bundle in **This session uses**, or click **Use in this session**. It takes effect from the next turn. Choose **No bundle** to detach it.
+- **Update** pulls the latest commit of a git bundle. If the local copy has edits, it refuses, and offers to overwrite them.
+- **Remove** forgets a bundle and detaches it from every session. For a git bundle it can also delete the downloaded checkout.
+
+### Editing a bundle
+
+A bundle is edited **where it already is**. There is no second copy.
+
+- **Edit as workspace** on a git bundle turns the library's own checkout (`<library>/repos/<id>`) into a normal clone: `git fetch --unshallow`, with file contents still fetched on demand and only the bundle's folder checked out. Then it registers that folder as a DSH workspace and opens a session there with the bundle attached.
+- On a local bundle, the workspace is the git repository the folder sits in, when there is one, so committing stays inside the workspace too. Otherwise it is the bundle folder.
+- **Open editing workspace** appears once a bundle is editable. It opens a session in that workspace again.
+
+In a session whose workspace holds the bundle, the agent edits pages with DSH's own `edit` and `write`, with no approval prompt. The prompt context gives it the OKF rules: keep the frontmatter, follow `SCHEMA.md`, list new pages in `index.md`, add a line to `log.md`, mark changed pages `lifecycle: needs_review`, and do not commit or push unless you ask. Everywhere else the bundle is read-only, and the context says where its workspace is. Other sessions read the same folder, so they see edits as soon as they are saved.
+
+Once a bundle is editable, the library protects the work in it:
+
+- **Update** only fast-forwards (`git merge --ff-only`). It refuses while anything is uncommitted, refuses when the branch has commits the remote does not, and cannot be forced.
+- **Remove** with *delete the files* refuses while there are uncommitted changes or unpushed commits. Remove without deleting always works.
+- **Fetch** refuses to overwrite a checkout left behind by a removed bundle when that checkout still holds unsaved work.
+
+Commit and push with ordinary git from the workspace (your own credentials are used; a `DSH_OKF_*_TOKEN` is never written into the clone).
+
+If the shell does not provide DSH's `workspaces` / `uiWorkspace` services, Edit as workspace still makes the bundle editable and shows its folder. Add it with **Add workspace…** in the sidebar, then pick the bundle in a session there.
+
+### Supported remotes
+
+| Host | Examples |
+|---|---|
+| GitHub | `https://github.com/owner/repo`, `git@github.com:owner/repo.git` |
+| Azure DevOps | `https://dev.azure.com/org/project/_git/repo`, `https://org.visualstudio.com/project/_git/repo`, `git@ssh.dev.azure.com:v3/org/project/repo` |
+| Any git host | any `https://`, `ssh://`, `git@host:path` or `file://` remote |
+
+### Authentication
+
+The plugin uses git's own authentication. Git Credential Manager (bundled with Git for Windows) handles GitHub and Azure DevOps sign-in, and SSH remotes use your SSH keys. Git never prompts from the Host: a missing credential comes back as an error in the dialog instead of a hung request. Sign in once from a terminal (for example `git ls-remote <url>`) and the plugin uses the stored credential.
+
+For a token instead, set one of these **before starting `dsh`**. The most specific one wins:
+
+| Variable | Used for |
+|---|---|
+| `DSH_OKF_AZURE_TOKEN` | Azure DevOps (a PAT with *Code: Read*) |
+| `DSH_OKF_GITHUB_TOKEN` | GitHub |
+| `DSH_OKF_GIT_TOKEN` | any host, as a fallback |
+
+The token goes to git as an `http.extraHeader` through `GIT_CONFIG_*` environment variables. It never appears in the process arguments, the remote URL, `.git/config`, `library.json`, or an error message. A URL that embeds a password (`https://user:pat@…`) is refused.
+
+## How the agent uses the bundle
+
+When a session has a bundle, the Host adds a **system-prompt context** (`okf:session-bundle`) on every turn. The context names the bundle and its folder, explains the OKF conventions, and includes the bundle's `index.md` catalog (first 8000 characters by default). DSH sends contexts after the retained history, so switching bundles does not invalidate the cached system-prompt prefix. The agent loop also logs the context whenever it changes.
+
+**The plugin registers no tools.** An OKF bundle is a wiki: a catalog, pages with a title and description in their frontmatter, and links between pages. The model is better at choosing pages from that catalog than any keyword ranking the plugin could do, so the context tells it to start from the catalog, open the pages it decides on with the Harness's own `read`, follow links, and `grep` / `glob` under the bundle folder when it wants exact terms. It writes those patterns itself, which also handles Chinese text, where words are not separated by spaces.
+
+A **subagent** inherits the bundle of the session that spawned it (`parentSession`).
+
+The context re-reads `index.md` whenever its modification time changes, so the catalog follows the agent's own edits on the next turn.
+
+The selection is stored in the plugin's own `library.json`, keyed by session id, not in the session log. Choosing a bundle therefore never writes an event that another DSH build would refuse to load.
+
+## Config
+
+Optional settings go under the row in `cordis.patch.yml`. A patch replaces the whole `config` block.
+
+| Key | Default | Meaning |
+|---|---|---|
+| `libraryDir` | `<DSH home>/okf` (`$DSH_HOME`, else `~/.dsh`) | Where `library.json` and fetched checkouts (`repos/<id>/`) live |
+| `gitPath` | `git` | The git executable |
+| `gitTimeoutMs` | `300000` | Deadline for one git command |
+| `indexChars` | `8000` | Characters of `index.md` sent each turn; `0` sends none |
+| `promptContext` | `true` | Add the per-session context |
+
+## How fetching works
+
+1. `git clone --depth 1 --filter=blob:none --no-checkout` downloads the latest commit's tree and no file contents.
+2. `git ls-tree` lists the paths. Only the candidate `index.md` files are read, to find the bundle.
+3. `git sparse-checkout set /<bundle folder>/` and a checkout bring down only the bundle's files.
+
+A large monorepo therefore costs little more than the bundle itself. Update runs `git fetch --depth 1` and `git reset --hard FETCH_HEAD` in the same sparse checkout. A clone goes to a temporary folder first and moves into place only after it succeeds, so a failed fetch leaves nothing behind.
+
+## Layout
+
+```text
+dsh-okf-plugin/
+├── package.json          # dsh.bundle.patch + dsh.client + exports["./client"]
+├── cordis.patch.yml      # inserts the one row, named after this package
+├── build.mjs             # emits lib/index.js (Host) and lib/client.js (browser)
+├── src/
+│   ├── index.ts          # Host: /api/okf/* routes, prompt context
+│   ├── host/
+│   │   ├── git.ts        # remote parsing (GitHub / Azure DevOps), git runner, clone/pull
+│   │   ├── library.ts    # library.json, fetch/update/add/remove, session selections
+│   │   ├── bundle.ts     # bundle detection, catalog summary, safe page reads
+│   │   ├── frontmatter.ts# small YAML frontmatter reader (no dependencies)
+│   │   └── knowledge.ts  # the per-session prompt context
+│   ├── types/
+│   │   ├── okf.ts        # records and routes shared by both halves
+│   │   └── contract.ts   # vendored copy of the Harness contract faces used
+│   └── client/
+│       ├── index.ts      # apply(): dictionaries + the two slot entries
+│       ├── store.ts      # the one store: library, selections, dialog state
+│       ├── components.tsx# session chip, dialog, add form, preview, page reader
+│       ├── markdown.tsx  # markdown → React elements (no innerHTML)
+│       ├── styles.ts     # inline style table on the shell's --dsw-* tokens
+│       └── locales.ts    # the `okf` namespace copy (zh source of truth, en)
+└── scripts/
+    ├── smoke.mjs         # both halves end to end, no Harness needed
+    ├── harness-check.mjs # against DSH's real SystemPrompt + ToolRuntime (needs a checkout)
+    └── preview-server.mjs# a dev page that mounts the built UI against the real Host routes
+```
+
+## Build and test
+
+```sh
+npm install
+npm run typecheck
+npm run build      # -> lib/index.js + lib/client.js
+npm run smoke
+```
+
+`lib/` is committed on purpose. The profile installs the package as it is, with no build toolchain. The Host artifact may import only Node built-ins, and `build.mjs` fails if it imports anything else.
+
+**`npm run smoke`** creates two throwaway git repositories as `file://` remotes and drives both halves through the built artifacts. It covers:
+
+- **Fetching:** a sparse fetch of a nested bundle, auto-detection, the many-bundles choice, duplicate ids, refused URLs, refs and paths (credentials, option injection, `..`), and cleanup after a failed fetch.
+- **Preview:** the catalog summary, page reads, and path-traversal refusal.
+- **Session use:** select and read back, the prompt context (including subagent inheritance), and that no tools are registered.
+- **Updating:** a clean update, a new commit, a refused overwrite of local edits, and a forced update.
+- **Library changes:** add-local and remove (a local folder is never deleted).
+- **Editing:** Edit as workspace unshallows the library checkout in place and is idempotent; edit rules reach only a session whose workspace holds the bundle; the catalog follows an edited `index.md`; Update refuses uncommitted changes, refuses to force, fast-forwards a clean bundle, and keeps diverged local commits; Remove refuses to delete unpushed work; Fetch refuses to overwrite a leftover checkout with unsaved work; a local bundle is edited at its git top level. The browser flow runs against stand-ins for `workspaces` and `uiWorkspace`: register, wait for the new row, connect, attach the bundle, open the session, and the fallback when registration fails.
+- **Remote parsing:** GitHub and Azure DevOps URL forms, and redaction.
+- **Browser half:** the registrations, the shared store, the chip and dialog markup, the offline state, and the markdown safety rules (raw HTML renders as text, no `javascript:` hrefs, external links open with `noopener`).
+
+**`scripts/harness-check.mjs`** applies the built Host module next to DSH's real `SystemPrompt` and `ToolRuntime`, provided by sibling plugins as in the Harness. It checks that the module applies under strict injection, that `assemble({ agent })` carries the bundle for the right session only, and that no `okf_*` tool reaches the real registry. It also checks that disposal removes everything.
+
+```sh
+DSH_ROOT=D:/project/dsh node --import file:///D:/project/dsh/node_modules/tsx/dist/esm/index.mjs scripts/harness-check.mjs
+```
+
+**`scripts/preview-server.mjs`** serves the built UI at `http://127.0.0.1:4317/`, backed by the real Host routes and real git. Add `?dark` for the dark theme and `?lang=zh` for Chinese. With `DSH_ROOT` set it uses DSH's own theme CSS.
+
+## Not verified yet
+
+- **Editing in place has not run in the live Harness yet.** The workspace services did: an earlier build (which cloned a separate copy) registered the workspace, DSH opened a session in it, and the bundle was attached, all from an out-of-tree bundle. Pushing from an edited bundle has not been tried.
+
+- **Not loaded in a running Harness yet.** The Host routes and prompt context were checked against DSH 0.2.1-alpha.1 source: the smoke test, the harness check, and the preview page. The plugin has not been installed with `plugin_manager`, and the agent has not answered from a bundle in a real session.
+- **The button's placement in the real Harness is unconfirmed.** DSH does not render `conversation.session.header.utilities` in a blank session (the "hero" phase), so the first install showed no button there; the composer copy (`conversation.input.right`) was added for that reason. The composer row also needs a session id: in a "New session" view that has not created its session yet, neither button can appear.
+- **Azure DevOps was not tested against a live organization.** URL parsing is covered by tests, and the token header follows Azure DevOps' documented Basic-PAT scheme, but no real ADO clone was run. GitHub was tested live with `yishao1224-design/knowledgeAgent`.
+- **File access to the bundle folder is unconfirmed.** The agent now reads pages with DSH's own `read` / `grep` / `glob`. DSH's `read` resolves paths without a workspace fence in 0.2.1-alpha.1 source, but a session's sandbox or permission profile may still block or prompt for reads under `~/.dsh/okf/`. Check this in a real session.
+- **The vendored contract** (`src/types/contract.ts`) was read from DSH 0.2.1-alpha.1. If a Harness upgrade moves one of these shapes, that file is the one to update.

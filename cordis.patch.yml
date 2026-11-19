@@ -1,0 +1,19 @@
+# OKF bundle plugin: one row, resolved by this package's own name.
+#
+# The Host half (lib/index.js) serves the /api/okf/* routes, adds the
+# per-session prompt context (bundle folder + catalog). It registers no tools:
+# the agent reads the bundle with the Harness's own file tools.
+# The client graph reads `dsh.client` from this same manifest and serves
+# exports["./client"] (the session-header chip and the dialog).
+#
+# Optional config (a patch replaces the whole config block):
+#
+#     config:
+#       libraryDir: 'D:/knowledge/okf'   # default: <DSH home>/okf (DSH_HOME, else ~/.dsh)
+#       gitPath: 'C:/Program Files/Git/cmd/git.exe'   # default: git on PATH
+#       gitTimeoutMs: 300000
+#       indexChars: 8000      # characters of index.md sent each turn; 0 = none
+#       promptContext: true   # tell the model which bundle the session uses
+- insert:
+    - id: okf
+      name: '@local/dsh-okf'
