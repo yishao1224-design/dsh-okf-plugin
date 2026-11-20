@@ -8,6 +8,7 @@
  * - `packages/client/connection/src` — `connection.fetch.register` (exact Fetch routes).
  * - `packages/core/system-prompt/src/index.ts` — `systemPrompt.context(PromptContext)`.
  * - `packages/core/agent/src/runtime-types.ts` — `Agent` (`id`, `session.header`).
+ * - `packages/core/tools/src/index.ts` — `tools.register(ToolDefinition)` (read from 0.2.1-rc.2).
  * - `packages/client/ui-conversation/src/client/contract/slots.ts` — `conversation.session.header.utilities`.
  * - `packages/client/ui-layout/src/client/index.ts` — `main` (keyed), `shell.overlay`, `layout.selectPanel`.
  * - `packages/client/ui-sidebar/src/client/contract/slots.ts` — `sidebar.panellist`.
@@ -86,6 +87,53 @@ export interface HostContext {
 /** A context that reached the optional services. */
 export interface HostScope {
   readonly systemPrompt: SystemPromptService
+  readonly tools: ToolsService
+}
+
+/**
+ * One model-content block (`packages/core/tools/src/index.ts`); the tools here
+ * only answer text.
+ */
+export interface TextBlock {
+  readonly type: 'text'
+  readonly text: string
+}
+
+/**
+ * The part of a tool call's context the tools here read
+ * (`ToolRunContext` in `packages/core/tools/src/index.ts`).
+ */
+export interface ToolRunContext {
+  /** The agent the call runs for; its session header carries the working directory. */
+  readonly agent?: Agent
+  /** Cancelled when the caller stops waiting. */
+  readonly signal: AbortSignal
+}
+
+/**
+ * A raw tool definition (`ToolDefinition` in `packages/core/tools/src/index.ts`).
+ * Registered without `defineTool`, so the tool validates its own arguments.
+ */
+export interface ToolDefinition {
+  readonly name: string
+  /** What the model reads. */
+  readonly description: string
+  /** JSON Schema of the arguments, object-rooted. */
+  readonly parameters: Record<string, unknown>
+  readonly output: {
+    /** JSON Schema every successful value must satisfy. */
+    readonly schema: Record<string, unknown>
+    /** Pure: the model-facing content for a value. */
+    render(args: unknown, value: unknown): TextBlock[]
+  }
+  /** Run one call; a throw is reported to the model as a failed call. */
+  execute(args: unknown, exec: ToolRunContext): Promise<unknown>
+}
+
+/** The Host tool registry (`ctx.tools`), reduced to registration. */
+export interface ToolsService {
+  /** Register globally; returns the disposer. */
+  register(definition: ToolDefinition): () => void
 }
 
 // ── Browser ──────────────────────────────────────────────────────────────────

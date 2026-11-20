@@ -36,7 +36,7 @@
  */
 import { randomBytes } from 'node:crypto'
 import { copyFile, cp, mkdir, readdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises'
-import { join } from 'node:path'
+import { join, sep } from 'node:path'
 import { judge } from './eligibility.ts'
 import type { ChangedFile } from './eligibility.ts'
 import { parsePage, text as metaText } from './frontmatter.ts'
@@ -154,6 +154,11 @@ export interface Team {
    * `main/` checkout), so any session can attach it from the OKF chip.
    */
   attach(folder: string): Promise<LibraryEntry>
+  /**
+   * The project wiki whose maintenance workspace holds `path` (the folder
+   * every round of that wiki reuses), so a session there needs no folder name.
+   */
+  wikiAt(path: string): Promise<string | undefined>
 }
 
 /** A project as the registry (or a folder scan) names it. */
@@ -1634,7 +1639,29 @@ export function openTeam(options: TeamOptions): Team {
     }
   }
 
-  return { status, connect, refresh, wiki, pulls, create, maintain: openRound, changes, openPr, attach, publish, setupHub, initialize, sync, review }
+  const wikiAt = async (path: string): Promise<string | undefined> => {
+    const data = await load()
+    if (data.team === undefined) return undefined
+    const here = fold(canonical(path))
+    const folders = new Set([...(await projectsIn(mainDir, data.team)).map(project => project.folder), ...data.maintains.map(record => record.wiki)])
+    for (const folder of folders) {
+      const dir = fold(canonical(workspaceDirOf(folder)))
+      if (here === dir || here.startsWith(`${dir}${sep}`)) return folder
+    }
+    return undefined
+  }
+
+  return { status, connect, refresh, wiki, pulls, create, maintain: openRound, changes, openPr, attach, publish, setupHub, initialize, sync, review, wikiAt }
+}
+
+/**
+ * A path in the form two spellings of one folder share: case-folded on
+ * Windows, whose file system ignores case.
+ * @param path - a canonical path.
+ * @returns the comparable path.
+ */
+function fold(path: string): string {
+  return process.platform === 'win32' ? path.toLowerCase() : path
 }
 
 /**

@@ -163,6 +163,25 @@ Connect the hub once on the page (URL, optional base branch, wiki folder), or pr
 
 **Sync from code** is the project's one code button: the first time it initializes (above), afterwards it keeps the wiki in step with its code. The wiki records which code commit it reflects as `code_commit` (and `code_synced`, the date) in the project's SCHEMA.md frontmatter, both OKF extension keys; Initialize writes them, and a wiki written before falls back to the commit its pages' `sources` cite most (`…/blob/<sha>/…`). **Refresh** asks each registered code repository for its latest commit with `git ls-remote` (no clone) and marks a project **Code updated** when it moved past the recorded commit; the tooltip shows both commits. **Sync from code** answers "up to date" when nothing moved; otherwise it opens the project's maintenance round, fetches the code into `.code/<folder>/`, lists the commits and changed files since the recorded commit, finds the pages whose frontmatter cites a changed path, sets `code_commit` to the new commit in the workspace's SCHEMA.md, and prefills the session with the task: update the pages that no longer match (as unreviewed drafts, sources re-pointed at the new commit), add pages for new modules, deprecate pages for removed ones, skip changes that do not change what the wiki says, then links, index and lint. Without a usable recorded commit it falls back to Initialize's read-through. Nothing reaches the base branch until the user opens the pull request.
 
+**Automatic sync with a DSH automation task.** The plugin gives the model two tools that run the same two steps as the page, so a scheduled reminder can keep a project wiki in step with its code without anyone pressing buttons:
+
+| Tool | What it does |
+|---|---|
+| `wiki_sync_from_code` | Sync from code. Answers `up-to-date` (one `git ls-remote`, nothing else) when the code has not moved; otherwise opens the project's maintenance round and answers `task` with the workspace, the commits compared, the changed files, the pages that cite them, and the same task text the page prefills. |
+| `wiki_open_pr` | Open pull request: stamps agent edits as unreviewed, runs `okf.py lint` (nothing is pushed if it fails), pushes the wiki branch, and opens or updates the round's pull request. It never merges. |
+
+Both take an optional `folder` (the wiki folder in the hub, e.g. `payments`). Without it they use the wiki whose maintenance workspace the session runs in, else the only wiki there is, else they ask for it. `wiki_open_pr` also takes `title` and `summary`.
+
+To set one up:
+
+1. On the Team Wiki page, pick the project and press **Open workspace**. This opens a session in the project's maintenance workspace (`<libraryDir>/team/work/<folder>`; every round reuses that folder, so the session stays valid).
+2. Give that session a permission preset that lets it edit files in the workspace and run `python scripts/okf.py` without asking, or each run waits for an approval.
+3. Ask it, for example: *"Every weekday at 09:00 Asia/Shanghai: call wiki_sync_from_code. If it gives a task, do it, then call wiki_open_pr with a one-sentence summary. If it is up to date, stop."* The model creates the reminder with `schedule_create`; it appears on DSH's **Automation tasks** page, where its time and text can be edited.
+
+Each time it fires, DSH posts the reminder into that session as a follow-up message. On a quiet day the run ends after one `git ls-remote`. When the code moved, the agent updates the pages and the pull request appears in the Team Wiki's list for a person to review. Every sync rewrites `code_commit` in `SCHEMA.md`, so these pull requests always need a person; they are never auto-merged. If the previous round's pull request is still open, the new changes go on the same branch and update that pull request.
+
+What DSH's scheduler does and does not do (DSH 0.2.1): reminders run only while DSH is running, and after a restart only the latest missed run fires; every run goes to the same session, so its history grows (compaction keeps it in bounds); a delivered reminder means the message was queued, not that the agent finished, so check the pull request list rather than the task's run log. The tools are registered for every session, but they only act on the connected team wiki and only ever open pull requests. Set `tools: false` in the row config to leave them out.
+
 **Publish** (the plugin's kb-publish) is a button next to Maintain. It renders the project's bundle, as it is in its maintenance workspace (made when there is none), into Azure DevOps wiki pages and adds them to that workspace's pull request:
 
 - `published/Projects/<Project>.md` is the landing page: summary, owner and code repository from the registry, then `index.md` with its links rewritten. `published/Projects/<Project>/` holds one page per concept, in the bundle's folders (`Concepts/`, `Entities/` …), plus a page per folder listing its pages.
@@ -190,7 +209,7 @@ A published change always needs a person, so the pull request is never auto-merg
 
 When a session has a bundle, the Host adds a **system-prompt context** (`okf:session-bundle`) on every turn. The context names the bundle and its folder, explains the OKF conventions, and includes the bundle's `index.md` catalog (first 8000 characters by default). DSH sends contexts after the retained history, so switching bundles does not invalidate the cached system-prompt prefix. The agent loop also logs the context whenever it changes.
 
-**The plugin registers no tools.** An OKF bundle is a wiki: a catalog, pages with a title and description in their frontmatter, and links between pages. The model is better at choosing pages from that catalog than any keyword ranking the plugin could do, so the context tells it to start from the catalog, open the pages it decides on with the Harness's own `read`, follow links, and `grep` / `glob` under the bundle folder when it wants exact terms. It writes those patterns itself, which also handles Chinese text, where words are not separated by spaces.
+**The plugin registers no tools for reading bundles** (its only tools are the two Team Wiki tools above). An OKF bundle is a wiki: a catalog, pages with a title and description in their frontmatter, and links between pages. The model is better at choosing pages from that catalog than any keyword ranking the plugin could do, so the context tells it to start from the catalog, open the pages it decides on with the Harness's own `read`, follow links, and `grep` / `glob` under the bundle folder when it wants exact terms. It writes those patterns itself, which also handles Chinese text, where words are not separated by spaces.
 
 A **subagent** inherits the bundle of the session that spawned it (`parentSession`).
 
@@ -209,6 +228,7 @@ Optional settings go under the row in `cordis.patch.yml`. A patch replaces the w
 | `gitTimeoutMs` | `300000` | Deadline for one git command |
 | `indexChars` | `8000` | Characters of `index.md` sent each turn; `0` sends none |
 | `promptContext` | `true` | Add the per-session context |
+| `tools` | `true` | Register the Team Wiki tools `wiki_sync_from_code` and `wiki_open_pr` |
 | `team.url` | — | Team wiki repository to connect when none is connected yet |
 | `team.ref` | the remote's default branch | Base branch of the team wiki |
 | `team.root` | `''` (repository root) | Where to look for bundles when `AGENTS.md` has no registry |
@@ -238,7 +258,7 @@ dsh-okf-plugin/
 ├── examples/
 │   └── wiki-auto-merge.yml # CI workflow for the team wiki repository
 ├── src/
-│   ├── index.ts          # Host: /api/okf/* routes, prompt context
+│   ├── index.ts          # Host: /api/okf/* routes, prompt context, Team Wiki tools
 │   ├── host/
 │   │   ├── git.ts        # remote parsing (GitHub / Azure DevOps), git runner, clone/pull
 │   │   ├── library.ts    # library.json, fetch/update/add/remove, session selections
@@ -246,6 +266,7 @@ dsh-okf-plugin/
 │   │   ├── frontmatter.ts# small YAML frontmatter reader (no dependencies)
 │   │   ├── knowledge.ts  # the per-session prompt context (team rules in maintenance sessions)
 │   │   ├── team.ts       # Team Wiki: project wikis, PR list, Maintain, New project wiki, Open pull request
+│   │   ├── tools.ts      # the model tools wiki_sync_from_code and wiki_open_pr (automation tasks)
 │   │   ├── review.ts     # reviewed/unreviewed from frontmatter; the agent-edit stamp
 │   │   ├── eligibility.ts# the auto-merge rule (shared with lib/check-pr.js)
 │   │   ├── github.ts     # the few GitHub REST calls
@@ -286,7 +307,7 @@ npm run smoke      # smoke.mjs, team-smoke.mjs, hub-smoke.mjs
 
 - **Fetching:** a sparse fetch of a nested bundle, auto-detection, the many-bundles choice, duplicate ids, refused URLs, refs and paths (credentials, option injection, `..`), and cleanup after a failed fetch.
 - **Preview:** the catalog summary, page reads, and path-traversal refusal.
-- **Session use:** select and read back, the prompt context (including subagent inheritance), and that no tools are registered.
+- **Session use:** select and read back, the prompt context (including subagent inheritance), and that the only tools registered are the two Team Wiki tools.
 - **Updating:** a clean update, a new commit, a refused overwrite of local edits, and a forced update.
 - **Library changes:** add-local and remove (a local folder is never deleted).
 - **Editing:** Edit as workspace unshallows the library checkout in place and is idempotent; edit rules reach only a session whose workspace holds the bundle; the catalog follows an edited `index.md`; Update refuses uncommitted changes, refuses to force, fast-forwards a clean bundle, and keeps diverged local commits; Remove refuses to delete unpushed work; Fetch refuses to overwrite a leftover checkout with unsaved work; a local bundle is edited at its git top level. The browser flow runs against stand-ins for `workspaces` and `uiWorkspace`: register, wait for the new row, connect, attach the bundle, open the session, and the fallback when registration fails.
@@ -295,11 +316,11 @@ npm run smoke      # smoke.mjs, team-smoke.mjs, hub-smoke.mjs
 
 **`scripts/team-smoke.mjs`** needs a knowledgeAgent checkout (`WIKI_FIXTURE`, else `../knowledgeAgent`) and Python. A bare repository with `okf/payments` (knowledgeAgent's bundle, one page stamped reviewed by `alice`) plays the team wiki; git reaches it under a GitHub URL through `url.<file>.insteadOf`, and a local HTTP server stands in for the GitHub API. It covers connect, review counts, Preview, Maintain (and reuse), the team rules in the prompt context, Open pull request (an eligible new page with its `index.md`/`log.md` lines and a stray change left out; then a reviewed page edited without reset, which is reset and needs a person; then a lint failure that commits nothing), the PR list and its verdicts, `lib/check-pr.js` agreeing in both cases, New project wiki with its setup pull request, and a merge that closes the workspace so Maintain starts fresh.
 
-**`scripts/hub-smoke.mjs`** covers the hub layout on a GitHub Enterprise host (`github.acme.com`, API under `/api/v3`): the registry drives the project list (summary, owner, repo link, a registered but missing folder, publish status), a new page is eligible, a change under `published/Projects/Payments/` goes in the same pull request and needs a person while another project's published page is left out, New project wiki adds a registry row (with `|` escaped) in the same pull request, a registered name is refused, Publish (into the same pull request, the landing page and folder pages, review lines, rewritten links, a stale published page removed, another project's left alone, an unchanged bundle proposing nothing), and `lib/check-pr.js` maps every case through the registry.
+**`scripts/hub-smoke.mjs`** covers the hub layout on a GitHub Enterprise host (`github.acme.com`, API under `/api/v3`): the registry drives the project list (summary, owner, repo link, a registered but missing folder, publish status), a new page is eligible, a change under `published/Projects/Payments/` goes in the same pull request and needs a person while another project's published page is left out, New project wiki adds a registry row (with `|` escaped) in the same pull request, a registered name is refused, Publish (into the same pull request, the landing page and folder pages, review lines, rewritten links, a stale published page removed, another project's left alone, an unchanged bundle proposing nothing), and `lib/check-pr.js` maps every case through the registry. The model tools run there too, as an automation task would call them from the payments workspace: an unknown folder is refused with the choices, `wiki_sync_from_code` answers up to date, then after a code commit answers the task (commits, changed file, the page citing it), `wiki_open_pr` updates the round's pull request with the new `code_commit`, a second call updates the same one, unknown arguments are refused, and with two project wikis a call outside any workspace asks for the folder while one from the payments workspace finds it.
 
 **`scripts/ado-smoke.mjs`** runs the pull request side against a fake Azure DevOps API, with the hub under `https://dev.azure.com/acme/Wiki/_git/team-wiki`: connect, Maintain, an eligible pull request (tagged, auto-complete on with squash), the PR list fetched from the source branch with statuses read (latest per context), a reviewed page edited (tag and auto-complete off, title kept), Mark reviewed with the PAT's account as reviewer, and a completed pull request that closes the workspace and moves the base branch clone. Every call is checked for the PAT and `api-version=7.1`.
 
-**`scripts/harness-check.mjs`** applies the built Host module next to DSH's real `SystemPrompt` and `ToolRuntime`, provided by sibling plugins as in the Harness. It checks that the module applies under strict injection, that `assemble({ agent })` carries the bundle for the right session only, and that no `okf_*` tool reaches the real registry. It also checks that disposal removes everything.
+**`scripts/harness-check.mjs`** applies the built Host module next to DSH's real `SystemPrompt` and `ToolRuntime`, provided by sibling plugins as in the Harness. It checks that the module applies under strict injection, that `assemble({ agent })` carries the bundle for the right session only, that `wiki_sync_from_code` and `wiki_open_pr` reach the real registry and run through its pipeline (no `okf_*` tool does), and that disposal removes everything.
 
 ```sh
 DSH_ROOT=D:/project/dsh node --import file:///D:/project/dsh/node_modules/tsx/dist/esm/index.mjs scripts/harness-check.mjs
@@ -309,6 +330,7 @@ DSH_ROOT=D:/project/dsh node --import file:///D:/project/dsh/node_modules/tsx/di
 
 ## Not verified yet
 
+- **The Team Wiki tools have not run from a real automation task yet.** `harness-check.mjs` registered and called them in DSH 0.2.1-rc.2's real `ToolRuntime`, and `hub-smoke.mjs` ran them against a stand-in GitHub Enterprise, but a Schedule reminder firing in a live maintenance session, with its permission preset, has not been tried.
 - **Published pages have not been opened in a real Azure DevOps wiki.** The file names follow Microsoft's documented title rules, but how the wiki resolves links to pages whose names hold an encoded character (for example `%2D` for a hyphen in a title) is untested. Run Publish once against a test wiki and check those links.
 
 - **The Team Wiki page has not run in the live Harness yet.** The `main` + `sidebar.panellist` registration is the one dsh-ado-stories uses for User stories; `layout.selectPanel(null)` before `openSession` is meant to leave the page for the new session. Against a real GitHub repository only the stand-in API was used: opening a pull request, labels, check runs and `refs/pull/<n>/head` fetches are untested live. The GitHub REST calls use `Bearer`; the git push uses Basic `x-access-token`, which GitHub accepts for both classic and fine-grained tokens.

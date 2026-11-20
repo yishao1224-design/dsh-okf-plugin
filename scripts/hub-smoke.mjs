@@ -146,9 +146,10 @@ const githubApi = `http://127.0.0.1:${String(server.address().port)}/api/v3`
 const host = await import(pathToFileURL(join(root, 'lib', 'index.js')).href)
 const routes = new Map()
 const libraryDir = join(work, 'library')
+const tools = new Map()
 host.apply({
   connection: { fetch: { register: (route) => { routes.set(route.path, route); return async () => {} } } },
-  inject: (_deps, callback) => { callback({ systemPrompt: { context: () => () => {} } }) },
+  inject: (_deps, callback) => { callback({ systemPrompt: { context: () => () => {} }, tools: { register: (tool) => { tools.set(tool.name, tool); return () => {} } } }) },
 }, { libraryDir, team: { githubHost: 'github.acme.com', githubApi, python, agentActor: 'dsh/smoke' } })
 
 async function api(path, { method = 'GET', query, body } = {}) {
@@ -276,6 +277,39 @@ const syncTask = synced.initialize?.prompt ?? ''
 check(syncTask.includes('- concepts/overview.md: src/main.ts') && syncTask.includes('- modified: src/main.ts') && syncTask.includes('- added: src/refund.ts') && syncTask.includes('Pay an amount; add refunds') && syncTask.includes(`blob/${codeAfter}/<path>`), `sync task: ${syncTask}`)
 check(readFileSync(join(ws, 'payments', 'SCHEMA.md'), 'utf8').includes(`code_commit: ${codeAfter}`) && existsSync(join(ws, '.code', 'payments', 'src', 'refund.ts')), 'the workspace records the new commit and has the new code')
 
+// ── The model tools an automation task calls: sync, edit, open the pull request ──
+const callTool = async (name, args, cwd) => {
+  const tool = tools.get(name)
+  if (tool === undefined) return { error: new Error(`no tool ${name}`) }
+  try {
+    const value = await tool.execute(args, { ...cwd === undefined ? {} : { agent: { id: 'scheduled', session: { header: { id: 'scheduled', cwd } } } }, signal: new AbortController().signal })
+    return { value, text: tool.output.render(args, value).map(block => block.text).join('') }
+  } catch (error) {
+    return { error }
+  }
+}
+check([...tools.keys()].join(',') === 'wiki_sync_from_code,wiki_open_pr', `tools: ${[...tools.keys()].join(',')}`)
+let toolCall = await callTool('wiki_sync_from_code', { folder: 'nope' })
+check(toolCall.error?.message.includes('Project wikis: payments'), `an unknown wiki is refused with the choices: ${toolCall.error?.message}`)
+toolCall = await callTool('wiki_sync_from_code', {}, join(ws, 'payments'))
+check(toolCall.value?.status === 'up-to-date' && toolCall.value.folder === 'payments' && toolCall.value.commit === codeAfter && toolCall.text.includes('Nothing to do'), `tool: nothing new: ${JSON.stringify(toolCall.value ?? toolCall.error?.message)}`)
+writeFileSync(join(codeSeed, 'src', 'main.ts'), 'export function pay(amount: number, currency: string): void {}\n')
+git(codeSeed, 'commit', '-qam', 'Pay in a currency')
+git(codeSeed, 'push', '-q', codeOrigin, 'HEAD:main')
+const codeThird = git(codeSeed, 'rev-parse', 'HEAD')
+toolCall = await callTool('wiki_sync_from_code', {}, ws)
+check(toolCall.value?.status === 'task' && toolCall.value.folder === 'payments' && toolCall.value.workspace === ws && toolCall.value.from === codeAfter && toolCall.value.to === codeThird && toolCall.value.files === 1 && toolCall.value.pages === 1 && toolCall.value.readThrough === false, `tool: sync task: ${JSON.stringify(toolCall.value ?? toolCall.error?.message)}`)
+check(toolCall.value?.task.includes('- modified: src/main.ts') && toolCall.text.includes('Pay in a currency') && toolCall.text.includes('call wiki_open_pr with folder "payments"'), `tool: the task text: ${toolCall.text}`)
+writeFileSync(join(ws, 'payments', 'concepts', 'overview.md'), readFileSync(join(ws, 'payments', 'concepts', 'overview.md'), 'utf8') + 'It pays in a currency.\n')
+const pullsBefore = pulls.length
+toolCall = await callTool('wiki_open_pr', { summary: 'Payments now take a currency.' }, ws)
+check(toolCall.value?.status === 'opened' && toolCall.value.reused === true && toolCall.value.files.includes('payments/concepts/overview.md') && toolCall.text.startsWith('Updated pull request #'), `tool: open pr: ${JSON.stringify(toolCall.value ?? toolCall.error?.message)}`)
+check(readFileSync(join(ws, 'payments', 'SCHEMA.md'), 'utf8').includes(`code_commit: ${codeThird}`), 'the pull request records the synced commit')
+toolCall = await callTool('wiki_open_pr', {}, ws)
+check(toolCall.value?.status === 'opened' && toolCall.value.reused === true && pulls.length === pullsBefore, `tool: calling it again updates the same pull request: ${JSON.stringify(toolCall.value ?? toolCall.error?.message)}`)
+toolCall = await callTool('wiki_open_pr', { folder: 'payments', extra: 'x' })
+check(toolCall.error?.message.includes('Unknown argument "extra"'), `tool: unknown arguments are refused: ${toolCall.error?.message}`)
+
 // ── Mark reviewed: stamps the person behind the token and needs a person to merge ──
 answer: {
   const bad = await api('/api/okf/team/review', { method: 'POST', body: { folder: 'payments', paths: ['../AGENTS.md'] } })
@@ -323,6 +357,11 @@ git(origin, 'update-ref', 'refs/heads/main', `refs/heads/${created.record.branch
 status = must(await api('/api/okf/team/refresh', { method: 'POST', body: {} }), 'refresh')
 const settlement = status.wikis.find(wiki => wiki.folder === 'settlement')
 check(settlement?.name === 'Settlement' && settlement.owner === '@carol' && settlement.summary === 'Daily settlement | batches' && settlement.published === undefined, `after merge: ${JSON.stringify(status.wikis)}`)
+// With two project wikis, the tools need a folder or a workspace to tell them apart.
+toolCall = await callTool('wiki_open_pr', {})
+check(toolCall.error?.message.includes('Name the project wiki') && toolCall.error.message.includes('settlement'), `tool: ambiguous without a workspace: ${JSON.stringify(toolCall.value ?? toolCall.error?.message)}`)
+toolCall = await callTool('wiki_open_pr', {}, ws)
+check(toolCall.value?.folder === 'payments', `tool: the session's workspace names the wiki: ${JSON.stringify(toolCall.value ?? toolCall.error?.message)}`)
 
 // ── An empty repository: connect, then Set up the hub ──
 git(work, 'init', '-q', '--bare', emptyOrigin)

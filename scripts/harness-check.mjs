@@ -13,8 +13,12 @@
  * - `ctx.inject(['systemPrompt'])` reaches the real service;
  * - `SystemPrompt.assemble({ agent })` carries the session's bundle as a context
  *   and carries nothing for a session without a bundle;
- * - no `okf_*` tool reaches the real `ToolRuntime` (the agent reads the bundle
- *   with the Harness's own file tools).
+ * - `ctx.inject(['tools'])` registers exactly the two Team Wiki tools,
+ *   `wiki_sync_from_code` and `wiki_open_pr`, in the real `ToolRuntime`: they
+ *   reach the assembled tool list, a call runs through the real pipeline (with
+ *   no team wiki connected it fails with a message the model can act on), and
+ *   no `okf_*` tool appears (the agent reads bundles with the Harness's own
+ *   file tools).
  *
  * Usage (from this package's root; needs the checkout's dependencies installed):
  *   DSH_ROOT=D:/project/dsh node --import file:///D:/project/dsh/node_modules/tsx/dist/esm/index.mjs scripts/harness-check.mjs
@@ -80,7 +84,14 @@ const withBundle = await systemPrompt.assemble({ agent: agent('s-1') })
 const context = withBundle.contexts.find(item => item.name === 'okf:session-bundle')
 check(context !== undefined && context.text.includes('<okf_bundle id="kb"') && context.text.includes('[Alpha](concepts/alpha.md)'), `assembled contexts: ${JSON.stringify(withBundle.contexts).slice(0, 400)}`)
 const toolNames = withBundle.tools.map(tool => tool.name)
-check(!toolNames.some(name => name.startsWith('okf_')), `the plugin must register no tools: ${toolNames.join(', ')}`)
+check(!toolNames.some(name => name.startsWith('okf_')), `the plugin must register no okf_* tools: ${toolNames.join(', ')}`)
+check(toolNames.includes('wiki_sync_from_code') && toolNames.includes('wiki_open_pr'), `the Team Wiki tools reach the assembled list: ${toolNames.join(', ')}`)
+const runtime = ctx.get('tools')
+const call = await runtime.execute({ callId: 'call-1', name: 'wiki_sync_from_code', arguments: {}, agent: agent('s-1'), signal: new AbortController().signal })
+const callText = JSON.stringify(call)
+check(call.isError === true && callText.includes('No team wiki repository is connected'), `a call with no team wiki connected: ${callText.slice(0, 400)}`)
+const badCall = await runtime.execute({ callId: 'call-2', name: 'wiki_open_pr', arguments: { nope: 1 }, agent: agent('s-1'), signal: new AbortController().signal })
+check(badCall.isError === true && JSON.stringify(badCall).includes('Unknown argument'), `bad arguments are refused: ${JSON.stringify(badCall).slice(0, 400)}`)
 const without = await systemPrompt.assemble({ agent: agent('s-2') })
 const empty = without.contexts.find(item => item.name === 'okf:session-bundle')
 check(empty === undefined || empty.text === '', `a session without a bundle got context: ${JSON.stringify(empty)}`)
@@ -88,6 +99,7 @@ check(empty === undefined || empty.text === '', `a session without a bundle got 
 await fiber.dispose()
 const after = await systemPrompt.assemble({ agent: agent('s-1') })
 check(!after.contexts.some(item => item.name === 'okf:session-bundle'), 'disposing the plugin must remove its prompt context')
+check(!after.tools.some(tool => tool.name.startsWith('wiki_')), 'disposing the plugin must remove its tools')
 rmSync(work, { recursive: true, force: true })
 
 if (failures.length > 0) {
