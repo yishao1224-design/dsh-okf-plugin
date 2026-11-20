@@ -227,7 +227,9 @@ published = must(await api('/api/okf/team/publish', { method: 'POST', body: { fo
 check(published.unchanged === true && published.pr === undefined, `publishing an unchanged bundle proposes nothing: ${JSON.stringify(published.prError ?? published.unchanged)}`)
 
 // ── Initialize from code: a read-only checkout in .code/, outside every pull request ──
-const init = must(await api('/api/okf/team/initialize', { method: 'POST', body: { folder: 'payments' } }), 'initialize')
+// The one button: Sync from code on a wiki never synced reads the code through, as Initialize does.
+const init = must(await api('/api/okf/team/sync', { method: 'POST', body: { folder: 'payments' } }), 'first sync')
+check(init.sync?.fallback === true && init.sync.to === init.initialize?.commit, `the first sync is a read-through: ${JSON.stringify(init.sync)}`)
 check(init.record.id === record.id && init.initialize?.code === '.code/payments' && init.initialize.repo === 'https://github.acme.com/pay/payments-service' && /^[0-9a-f]{40}$/.test(init.initialize.commit), `initialize: ${JSON.stringify(init.initialize ?? init)}`)
 check(existsSync(join(ws, '.code', 'payments', 'src', 'main.ts')) && /^\/\.code\/$/m.test(readFileSync(join(ws, '.git', 'info', 'exclude'), 'utf8')) && !git(ws, 'status', '--porcelain').includes('.code'), 'the code is checked out and ignored')
 const prompt = init.initialize?.prompt ?? ''
