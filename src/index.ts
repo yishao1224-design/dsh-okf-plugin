@@ -25,6 +25,7 @@
  */
 import { homedir } from 'node:os'
 import { join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { readPage, summarize } from './host/bundle.ts'
 import { GitError } from './host/git.ts'
 import { IndexCache, sessionContext } from './host/knowledge.ts'
@@ -315,6 +316,10 @@ export const handlers: Readonly<Record<string, { methods: readonly ('GET' | 'POS
       return json(await team.maintain(required(record, 'folder')))
     }),
   },
+  [ROUTES.teamSetup]: {
+    methods: ['POST'],
+    handle: route(['POST'], async (_request, { team }) => json(await team.setupHub())),
+  },
   [ROUTES.teamPublish]: {
     methods: ['POST'],
     handle: route(['POST'], async (request, { team }) => {
@@ -397,6 +402,15 @@ export function apply(ctx: HostContext, config: Config | null | undefined = {}):
     git: settings.gitPath ?? 'git',
     python: teamRow.python ?? (process.platform === 'win32' ? 'python' : 'python3'),
     okfScript: teamRow.okfScript ?? 'scripts/okf.py',
+    // lib/index.js runs from the installed package: the template and the checker ship beside it.
+    hubTemplate: {
+      dir: fileURLToPath(new URL('../templates/hub/', import.meta.url)),
+      files: {
+        '.github/wiki/check-pr.js': fileURLToPath(new URL('./check-pr.js', import.meta.url)),
+        '.github/wiki/workflows/wiki-auto-merge.yml': fileURLToPath(new URL('../examples/wiki-auto-merge.yml', import.meta.url)),
+        '.github/wiki/workflows/wiki-publish-to-ado.yml': fileURLToPath(new URL('../examples/wiki-publish-to-ado.yml', import.meta.url)),
+      },
+    },
     githubHost: teamRow.githubHost ?? 'github.com',
     // GitHub Enterprise Server serves its REST API under /api/v3 on its own host.
     githubApi: teamRow.githubApi ?? ((teamRow.githubHost ?? 'github.com') === 'github.com' ? 'https://api.github.com' : `https://${teamRow.githubHost ?? ''}/api/v3`),

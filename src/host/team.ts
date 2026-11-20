@@ -33,7 +33,7 @@
  * `http.extraHeader` through `GIT_CONFIG_*`, never argv, URL or config.
  */
 import { randomBytes } from 'node:crypto'
-import { copyFile, mkdir, readdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises'
+import { copyFile, cp, mkdir, readdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { judge } from './eligibility.ts'
 import type { ChangedFile } from './eligibility.ts'
@@ -61,6 +61,11 @@ export interface TeamOptions {
   readonly python: string
   /** The toolchain script, relative to the repository. */
   readonly okfScript: string
+  /**
+   * What Set up the hub writes: a folder copied as is, plus single files
+   * (repository path → source file), e.g. the CI checker and the workflows.
+   */
+  readonly hubTemplate?: { readonly dir: string, readonly files: Readonly<Record<string, string>> }
   readonly githubHost: string
   readonly githubApi: string
   /** Label set on eligible pull requests; `''` sets none. */
@@ -83,6 +88,8 @@ interface TeamFile {
   base?: string
   commit?: string
   refreshedAt?: string
+  /** The repository has no commits yet (Set up the hub fills it). */
+  empty?: boolean
   maintains: MaintainRecord[]
 }
 
@@ -97,6 +104,8 @@ export interface Team {
   maintain(folder: string): Promise<MaintainAnswer>
   changes(id: string): Promise<ChangesAnswer>
   openPr(id: string, request: { title?: string, summary?: string }): Promise<OpenPrAnswer>
+  /** Fill an empty repository with the hub skeleton and push it as the base branch's first commit. */
+  setupHub(): Promise<TeamStatus>
   /** kb-publish: render the bundle into published/Projects/ and open its pull request. */
   publish(folder: string): Promise<PublishAnswer>
   /**
@@ -497,6 +506,7 @@ export function openTeam(options: TeamOptions): Team {
     return {
       ...data.team === undefined ? {} : { team: data.team, baseBranch: baseOf(data) },
       ...data.commit === undefined ? {} : { commit: data.commit },
+      ...data.empty === true ? { empty: true } : {},
       ...data.refreshedAt === undefined ? {} : { refreshedAt: data.refreshedAt },
       wikis,
       maintains,
@@ -509,10 +519,19 @@ export function openTeam(options: TeamOptions): Team {
     const team = needTeam(data)
     const token = tokenFor(team.provider)
     const base = baseOf(data)
-    await git(mainDir, ['fetch', '--quiet', '--prune', 'origin', `+refs/heads/${base}:refs/remotes/origin/${base}`], token)
+    try {
+      await git(mainDir, ['fetch', '--quiet', '--prune', 'origin', `+refs/heads/${base}:refs/remotes/origin/${base}`], token)
+    } catch (error) {
+      // An empty repository has no branch to fetch yet.
+      const heads = await git(mainDir, ['ls-remote', '--heads', 'origin'], token).catch(() => undefined)
+      if (heads !== '') throw error
+      Object.assign(data, { empty: true, commit: undefined, refreshedAt: new Date().toISOString() })
+      return
+    }
     await git(mainDir, ['checkout', '--quiet', '--force', '--detach', `origin/${base}`])
     data.commit = await git(mainDir, ['rev-parse', 'HEAD'])
     data.refreshedAt = new Date().toISOString()
+    delete data.empty
   }
 
   const connect = (request: { url: string, ref?: string, root?: string }): Promise<TeamStatus> => serial(async () => {
@@ -531,21 +550,42 @@ export function openTeam(options: TeamOptions): Team {
     const token = tokenFor(provider)
     await mkdir(options.dir, { recursive: true })
     const temp = join(options.dir, `main.${randomBytes(3).toString('hex')}.tmp`)
+    const clone = (branch: string | undefined): Promise<string> => git(options.dir, ['clone', '--quiet', '--filter=blob:none', ...branch === undefined ? [] : ['--branch', branch], '--', request.url.trim(), temp], token)
     try {
-      await git(options.dir, ['clone', '--quiet', '--filter=blob:none', ...ref === undefined ? [] : ['--branch', ref], '--', request.url.trim(), temp], token)
+      await clone(ref)
     } catch (error) {
       await rm(temp, { recursive: true, force: true })
-      throw error
+      if (ref === undefined) throw error
+      // `--branch` fails on an empty repository; a plain clone tells the two apart.
+      const empty = await clone(undefined).then(async () => git(temp, ['rev-parse', '--verify', '--quiet', 'HEAD']).then(() => false, () => true), () => false)
+      if (!empty) {
+        await rm(temp, { recursive: true, force: true })
+        throw error
+      }
     }
     await rm(mainDir, { recursive: true, force: true })
     await rename(temp, mainDir)
     const data = await load()
-    const base = ref ?? await git(mainDir, ['symbolic-ref', '--short', 'refs/remotes/origin/HEAD']).then(value => value.replace(/^origin\//, ''), () => undefined)
-      ?? await git(mainDir, ['rev-parse', '--abbrev-ref', 'HEAD'])
+    // A new, empty repository clones fine but has no commit and no branch yet.
+    const empty = await git(mainDir, ['rev-parse', '--verify', '--quiet', 'HEAD']).then(() => false, () => true)
+    const base = ref ?? (empty
+      ? 'main'
+      : await git(mainDir, ['symbolic-ref', '--short', 'refs/remotes/origin/HEAD']).then(value => value.replace(/^origin\//, ''), () => undefined)
+        ?? await git(mainDir, ['rev-parse', '--abbrev-ref', 'HEAD']))
+    // Workspaces of another repository are not this hub's: they leave the list (their folders stay on disk).
+    if (data.team !== undefined && data.team.url !== request.url.trim()) {
+      for (const record of data.maintains) if (record.closed === undefined) Object.assign(record, { closed: 'closed' })
+    }
     data.team = { url: request.url.trim(), provider, ...ref === undefined ? {} : { ref }, root, name: remoteName(request.url), connectedAt: new Date().toISOString() }
     data.base = base
-    await git(mainDir, ['checkout', '--quiet', '--detach'])
-    data.commit = await git(mainDir, ['rev-parse', 'HEAD'])
+    if (empty) {
+      data.empty = true
+      delete data.commit
+    } else {
+      delete data.empty
+      await git(mainDir, ['checkout', '--quiet', '--detach'])
+      data.commit = await git(mainDir, ['rev-parse', 'HEAD'])
+    }
     data.refreshedAt = new Date().toISOString()
     statsCache.clear()
     pullsCache = undefined
@@ -988,6 +1028,46 @@ export function openTeam(options: TeamOptions): Team {
     })
   }
 
+  const setupHub = (): Promise<TeamStatus> => serial(async () => {
+    const data = await load()
+    const team = needTeam(data)
+    const token = tokenFor(team.provider)
+    const base = baseOf(data)
+    if (options.hubTemplate === undefined) throw new LibraryError('no-template', 'This build has no hub template.', 500)
+    // Only ever the first commit: a repository with any branch is left alone.
+    const heads = await git(mainDir, ['ls-remote', '--heads', 'origin'], token)
+    if (heads !== '') {
+      await syncMain(data)
+      await save(data)
+      throw new LibraryError('not-empty', 'The repository is not empty any more, so it was not set up. Refresh to see what it holds.', 409)
+    }
+    const temp = join(options.dir, `setup.${randomBytes(3).toString('hex')}.tmp`)
+    try {
+      await mkdir(temp, { recursive: true })
+      await git(temp, ['init', '--quiet'])
+      await git(temp, ['checkout', '--quiet', '-b', base])
+      await cp(options.hubTemplate.dir, temp, { recursive: true })
+      for (const [path, source] of Object.entries(options.hubTemplate.files)) {
+        const target = join(temp, ...path.split('/'))
+        await mkdir(join(target, '..'), { recursive: true })
+        await copyFile(source, target)
+      }
+      await git(temp, ['add', '-A'])
+      const email = await git(temp, ['config', 'user.email']).catch(() => '')
+      const identity = email === '' ? (/^(.*?)\s*<([^>]+)>$/.exec(options.commitAuthor) ?? []) : []
+      const who = identity.length === 3 ? ['-c', `user.name=${identity[1] ?? ''}`, '-c', `user.email=${identity[2] ?? ''}`] : []
+      await git(temp, [...who, 'commit', '--quiet', '-m', 'Set up the team wiki hub\n\nAGENTS.md with an empty project registry, scripts/okf.py, published/Projects/,\nand the auto-merge checker and workflows under .github/wiki/.'])
+      await git(temp, ['push', '--quiet', team.url, `HEAD:refs/heads/${base}`], token)
+    } finally {
+      await rm(temp, { recursive: true, force: true })
+    }
+    await syncMain(data)
+    statsCache.clear()
+    pullsCache = undefined
+    await save(data)
+    return status()
+  })
+
   /**
    * kb-publish: render the project's bundle (as it is in its maintenance
    * workspace, made when there is none) into published/Projects/, then open or
@@ -1055,7 +1135,7 @@ export function openTeam(options: TeamOptions): Team {
     }
   }
 
-  return { status, connect, refresh, wiki, pulls, create, maintain, changes, openPr, attach, publish }
+  return { status, connect, refresh, wiki, pulls, create, maintain, changes, openPr, attach, publish, setupHub }
 }
 
 /**

@@ -14,6 +14,7 @@
     "lib/check-pr.js",
     "examples/wiki-auto-merge.yml",
     "examples/wiki-publish-to-ado.yml",
+    "templates/hub",
     "cordis.patch.yml",
     "README.md"
   ],

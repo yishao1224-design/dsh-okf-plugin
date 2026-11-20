@@ -59,6 +59,7 @@ git(seed, 'init', '-q')
 git(seed, 'add', '-A')
 git(seed, 'commit', '-qm', 'seed hub')
 const origin = join(work, 'origin.git')
+const emptyOrigin = join(work, 'empty.git')
 git(work, 'clone', '-q', '--bare', seed, origin)
 git(origin, 'symbolic-ref', 'HEAD', 'refs/heads/main')
 
@@ -80,9 +81,11 @@ const server = createServer((request, response) => {
     const url = new URL(request.url ?? '/', 'http://x')
     seen.push(`${request.method} ${url.pathname}`)
     const send = (status, value) => { response.writeHead(status, { 'content-type': 'application/json' }); response.end(JSON.stringify(value)) }
-    const base = '/api/v3/repos/acme/hub'
+    const repoName = url.pathname.startsWith('/api/v3/repos/acme/empty/') ? 'empty' : 'hub'
+    const base = `/api/v3/repos/acme/${repoName}`
+    const bare = repoName === 'empty' ? emptyOrigin : origin
     const json = body === '' ? {} : JSON.parse(body)
-    const view = pull => ({ number: pull.number, title: pull.title, html_url: `${URL_}/pull/${String(pull.number)}`, draft: false, updated_at: '2026-11-19T08:00:00Z', user: { login: 'dsh-bot' }, head: { ref: pull.head, sha: git(origin, 'rev-parse', `refs/heads/${pull.head}`) }, base: { ref: pull.base }, labels: pull.labels.map(name => ({ name })), state: pull.state, merged: false })
+    const view = pull => ({ number: pull.number, title: pull.title, html_url: `${URL_}/pull/${String(pull.number)}`, draft: false, updated_at: '2026-11-19T08:00:00Z', user: { login: 'dsh-bot' }, head: { ref: pull.head, sha: git(bare, 'rev-parse', `refs/heads/${pull.head}`) }, base: { ref: pull.base }, labels: pull.labels.map(name => ({ name })), state: pull.state, merged: false })
     if (request.method === 'GET' && url.pathname === `${base}/pulls`) {
       const head = url.searchParams.get('head')
       return send(200, pulls.filter(pull => pull.state === 'open' && (head === null || `acme:${pull.head}` === head)).map(view))
@@ -90,7 +93,7 @@ const server = createServer((request, response) => {
     if (request.method === 'POST' && url.pathname === `${base}/pulls`) {
       const pull = { number: pulls.length + 1, title: json.title, body: json.body, head: json.head, base: json.base, labels: [], state: 'open' }
       pulls.push(pull)
-      git(origin, 'update-ref', `refs/pull/${String(pull.number)}/head`, `refs/heads/${pull.head}`)
+      git(bare, 'update-ref', `refs/pull/${String(pull.number)}/head`, `refs/heads/${pull.head}`)
       return send(201, view(pull))
     }
     let match = new RegExp(`^${base}/pulls/(\\d+)$`).exec(url.pathname)
@@ -99,7 +102,7 @@ const server = createServer((request, response) => {
       if (pull === undefined) return send(404, { message: 'Not Found' })
       if (request.method === 'PATCH') {
         Object.assign(pull, { title: json.title, body: json.body })
-        git(origin, 'update-ref', `refs/pull/${String(pull.number)}/head`, `refs/heads/${pull.head}`)
+        git(bare, 'update-ref', `refs/pull/${String(pull.number)}/head`, `refs/heads/${pull.head}`)
       }
       return send(200, view(pull))
     }
@@ -229,6 +232,28 @@ git(origin, 'update-ref', 'refs/heads/main', `refs/heads/${created.record.branch
 status = must(await api('/api/okf/team/refresh', { method: 'POST', body: {} }), 'refresh')
 const settlement = status.wikis.find(wiki => wiki.folder === 'settlement')
 check(settlement?.name === 'Settlement' && settlement.owner === '@carol' && settlement.summary === 'Daily settlement | batches' && settlement.published === undefined, `after merge: ${JSON.stringify(status.wikis)}`)
+
+// ── An empty repository: connect, then Set up the hub ──
+git(work, 'init', '-q', '--bare', emptyOrigin)
+const EMPTY_URL = 'https://github.acme.com/acme/empty'
+process.env.GIT_CONFIG_COUNT = '3'
+process.env.GIT_CONFIG_KEY_2 = `url.${pathToFileURL(emptyOrigin).href}.insteadOf`
+process.env.GIT_CONFIG_VALUE_2 = EMPTY_URL
+status = must(await api('/api/okf/team/connect', { method: 'POST', body: { url: EMPTY_URL, ref: 'main' } }), 'connect empty')
+check(status.empty === true && status.commit === undefined && status.wikis.length === 0 && status.baseBranch === 'main', `an empty repository connects: ${JSON.stringify(status)}`)
+status = must(await api('/api/okf/team/refresh', { method: 'POST', body: {} }), 'refresh empty')
+check(status.empty === true, 'refresh keeps it empty')
+status = must(await api('/api/okf/team/setup', { method: 'POST', body: {} }), 'setup')
+check(status.empty === undefined && /^[0-9a-f]{40}$/.test(status.commit ?? '') && status.wikis.length === 0, `set up: ${JSON.stringify(status)}`)
+const tree = git(emptyOrigin, 'ls-tree', '-r', '--name-only', 'main').split('\n')
+check(['AGENTS.md', 'README.md', 'scripts/okf.py', 'published/Projects/.gitkeep', '.github/wiki/check-pr.js', '.github/wiki/workflows/wiki-auto-merge.yml', '.github/wiki/workflows/wiki-publish-to-ado.yml'].every(path => tree.includes(path)), `hub skeleton: ${tree.join(', ')}`)
+answer: {
+  const again = await api('/api/okf/team/setup', { method: 'POST', body: {} })
+  check(again.status === 409 && again.body.error.code === 'not-empty', `a second setup is refused: ${JSON.stringify(again.body)}`)
+}
+const first = must(await api('/api/okf/team/create', { method: 'POST', body: { name: 'Payments', owner: '@alice' } }), 'create in new hub')
+const firstAgents = readFileSync(join(first.workspace, 'AGENTS.md'), 'utf8')
+check(first.record.wiki === 'payments' && /\|---\|---\|---\|---\|---\|\n\| Payments \| — \| — \| @alice \| `payments\/` \|/.test(firstAgents) && first.pr?.files.includes('payments/index.md'), `first project in the new hub: ${first.prError ?? ''} ${firstAgents.slice(-300)}`)
 
 server.close()
 rmSync(work, { recursive: true, force: true })

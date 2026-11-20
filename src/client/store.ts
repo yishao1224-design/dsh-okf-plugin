@@ -212,6 +212,8 @@ export interface OkfStore {
   loadTeam(): Promise<void>
   connectTeam(request: { url: string, ref?: string, root?: string }): Promise<void>
   refreshTeam(): Promise<void>
+  /** Fill an empty repository with the hub skeleton. */
+  setupHub(): Promise<void>
   loadWiki(folder: string): Promise<void>
   loadPulls(force?: boolean): Promise<void>
   /** Create a project wiki, then open a session in its new workspace. */
@@ -434,6 +436,10 @@ export function createOkfStore(fetcher: Fetcher = (input, init) => globalThis.fe
         setTeam({ status: failed(state.team.status, error) })
       }
       await loadPulls(true)
+    },
+    async setupHub() {
+      const data = await call<TeamStatus>(fetcher, ROUTES.teamSetup, { method: 'POST', body: {}, timeoutMs: GIT_TIMEOUT_MS })
+      setTeam({ status: { status: 'ready', data }, wikis: {} })
     },
     async loadWiki(folder) {
       const before = state.team.wikis[folder] ?? { status: 'idle' }

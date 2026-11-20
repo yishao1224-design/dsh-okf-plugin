@@ -78,7 +78,7 @@ export function TeamWikiPage({ store, t }: TeamWikiPageProps): ReactNode {
       <PageHeader t={t} repo={data.team.name} branch={data.baseBranch}>
         <Button disabled={busy} title={data.refreshedAt === undefined ? undefined : t('team.refreshedAt', { at: new Date(data.refreshedAt).toLocaleString() })} onClick={() => { void store.refreshTeam() }}>{busy ? t('team.refreshing') : t('team.refresh')}</Button>
         <Button onClick={() => { setChangingRepo(true) }}>{t('team.changeRepo')}</Button>
-        <Button variant="primary" onClick={() => { setCreating(true) }}>{t('team.new')}</Button>
+        {data.empty !== true && <Button variant="primary" onClick={() => { setCreating(true) }}>{t('team.new')}</Button>}
       </PageHeader>
       <div style={st('twTabs')} role="tablist">
         <button type="button" role="tab" aria-selected={tab === 'wikis'} style={sx('twTab', tab === 'wikis' && 'twTabActive')} onClick={() => { setTab('wikis') }}>{t('team.tabWikis')}</button>
@@ -181,6 +181,7 @@ function WikisTab({ store, state, data, t, onCreate }: { readonly store: OkfStor
   const current = data.wikis.find(wiki => wiki.folder === selected)
     ?? data.wikis.find(wiki => wiki.maintainId !== undefined || pullsOf(pulls, wiki.folder).length > 0)
     ?? data.wikis[0]
+  if (data.empty === true) return <EmptyHub store={store} data={data} t={t} />
   if (data.wikis.length === 0 && pending.length === 0) {
     return (
       <div style={st('empty')}>
@@ -332,6 +333,40 @@ function WikiDetailPane({ store, state, data, wiki, t }: { readonly store: OkfSt
       {tab === 'pages' && detail?.data !== undefined && <PageList pages={pages} t={t} empty={t('team.noPages')} />}
       {tab === 'review' && detail?.data !== undefined && <PageList pages={needsReview} t={t} empty={t('team.noReview')} />}
       {data.team !== undefined && <Pointer hub={data.team.url} wiki={wiki} t={t} />}
+    </div>
+  )
+}
+
+/**
+ * A connected repository with no commits: offer to lay out the hub.
+ * @param props - store, status, translator.
+ * @returns the panel.
+ */
+function EmptyHub({ store, data, t }: { readonly store: OkfStore, readonly data: TeamStatus, readonly t: T }): ReactNode {
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState<string | undefined>(undefined)
+  const setup = (): void => {
+    setBusy(true)
+    setError(undefined)
+    store.setupHub().then(() => { setBusy(false) }, (failure: unknown) => {
+      setBusy(false)
+      setError((failure as Error).message)
+    })
+  }
+  return (
+    <div style={{ maxWidth: 640, margin: '32px auto', padding: '0 24px' }}>
+      <h2 style={st('twDetailName')}>{t('team.emptyTitle')}</h2>
+      <p style={st('note')}>{t('team.emptyText', { name: data.team?.name ?? '', branch: data.baseBranch ?? 'main' })}</p>
+      <pre style={{ ...st('mdPre'), whiteSpace: 'pre-wrap' }}>{[
+        'AGENTS.md                     rules for agents + empty project registry',
+        'README.md',
+        'scripts/okf.py                shared OKF toolchain',
+        'published/Projects/           pages for the Azure DevOps wiki (generated)',
+        '.github/wiki/check-pr.js      auto-merge checker',
+        '.github/wiki/workflows/*.yml  auto-merge and ADO sync (move to .github/workflows to enable)',
+      ].join('\n')}</pre>
+      {error !== undefined && <div style={{ ...st('error'), marginBottom: 10, whiteSpace: 'pre-wrap' }}>{error}</div>}
+      <Button variant="primary" disabled={busy} onClick={setup}>{busy ? t('team.settingUp') : t('team.setUp')}</Button>
     </div>
   )
 }
