@@ -228,19 +228,48 @@ function WikisTab({ store, state, data, t, onCreate }: { readonly store: OkfStor
             </button>
           )
         })}
-        {pending.map(record => (
-          <div key={record.id} style={{ ...st('twCard'), cursor: 'default' }}>
-            <div style={st('twCardName')}><span>{record.wikiName}</span><span style={sx('badge', 'badgeWarn')}>{t('team.pendingWiki')}</span></div>
-            <div style={st('twMono')}>{record.wiki}</div>
-            <div style={st('twMeta')}>{record.pr === undefined ? t('team.pendingNoPr') : <a style={st('twLink')} href={record.pr.url} target="_blank" rel="noreferrer">{t('team.prNumber', { number: record.pr.number })}</a>}</div>
-          </div>
-        ))}
+        {pending.map(record => <PendingCard key={record.id} store={store} record={record} t={t} />)}
       </div>
       <div style={st('twDetail')}>
         {current === undefined
           ? <div style={st('empty')}>{t('team.pickWiki')}</div>
           : <WikiDetailPane key={current.folder} store={store} state={state} data={data} wiki={current} t={t} />}
       </div>
+    </div>
+  )
+}
+
+/**
+ * A new project wiki whose setup pull request has not merged: its workspace,
+ * and its pull request (or the button that opens it, when the first try failed,
+ * e.g. before a token was set).
+ * @param props - store, the workspace record.
+ * @returns the card.
+ */
+function PendingCard({ store, record, t }: { readonly store: OkfStore, readonly record: MaintainRecord, readonly t: T }): ReactNode {
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState<string | undefined>(undefined)
+  const open = (): void => {
+    setBusy(true)
+    setError(undefined)
+    store.maintainWiki(record.wiki).then((outcome) => {
+      setBusy(false)
+      if (!outcome.opened) setError(manualText(outcome, t))
+    }, (failure: unknown) => {
+      setBusy(false)
+      setError((failure as Error).message)
+    })
+  }
+  return (
+    <div style={{ ...st('twCard'), cursor: 'default' }}>
+      <div style={st('twCardName')}><span>{record.wikiName}</span><span style={sx('badge', 'badgeWarn')}>{t('team.pendingWiki')}</span></div>
+      <div style={st('twMono')}>{record.wiki}</div>
+      <div style={st('twMeta')}>{record.pr === undefined ? t('team.pendingNoPr') : <a style={st('twLink')} href={record.pr.url} target="_blank" rel="noreferrer">{t('team.prNumber', { number: record.pr.number })}</a>}</div>
+      <div style={{ ...st('row'), marginTop: 6 }}>
+        {record.pr === undefined && <Button variant="primary" style={{ minHeight: 24 }} title={t('team.pendingOpenPrHint')} onClick={() => { store.openPrDialog(record.id) }}>{t('team.openPr')}</Button>}
+        <Button style={{ minHeight: 24 }} disabled={busy} title={t('team.maintainHint')} onClick={open}>{busy ? t('team.opening') : t('team.maintainOpen')}</Button>
+      </div>
+      {error !== undefined && <div style={{ ...st('error'), marginTop: 6 }}>{error}</div>}
     </div>
   )
 }

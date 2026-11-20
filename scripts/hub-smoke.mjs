@@ -85,6 +85,7 @@ process.env.DSH_OKF_GITHUB_TOKEN = 'smoke-token'
 
 // ── 2 · a stand-in for the GitHub Enterprise REST API (/api/v3) ──────────
 const pulls = []
+let failPulls = false
 const seen = []
 const server = createServer((request, response) => {
   let body = ''
@@ -101,6 +102,10 @@ const server = createServer((request, response) => {
     if (request.method === 'GET' && url.pathname === `${base}/pulls`) {
       const head = url.searchParams.get('head')
       return send(200, pulls.filter(pull => pull.state === 'open' && (head === null || `acme:${pull.head}` === head)).map(view))
+    }
+    if (request.method === 'POST' && url.pathname === `${base}/pulls` && failPulls) {
+      failPulls = false
+      return send(401, { message: 'Bad credentials' })
     }
     if (request.method === 'POST' && url.pathname === `${base}/pulls`) {
       const pull = { number: pulls.length + 1, title: json.title, body: json.body, head: json.head, base: json.base, labels: [], state: 'open' }
@@ -286,6 +291,18 @@ answer: {
 git(clone, 'fetch', '-q', 'origin')
 ci = checker(clone, `origin/${created.record.branch}`)
 check(ci.status === 1 && ci.stdout.includes('project wiki: settlement') && ci.stdout.includes('AGENTS.md'), `check-pr new project: ${ci.status} ${ci.stdout} ${ci.stderr}`)
+
+// A setup pull request that failed to open (say, no token yet) can be opened later from its card.
+failPulls = true
+const shadow = must(await api('/api/okf/team/create', { method: 'POST', body: { name: 'Shadow' } }), 'create without a pull request')
+check(shadow.pr === undefined && typeof shadow.prError === 'string', `the setup PR failed: ${JSON.stringify(shadow.prError)}`)
+status = must(await api('/api/okf/team'), 'status with a pending wiki')
+check(status.maintains.some(item => item.id === shadow.record.id && item.pr === undefined) && !status.wikis.some(wiki => wiki.folder === 'shadow'), 'the new wiki waits without a pull request')
+const reopened = must(await api('/api/okf/team/maintain', { method: 'POST', body: { folder: 'shadow' } }), 'open the pending workspace')
+check(reopened.record.id === shadow.record.id && reopened.created === false, 'Open workspace on a pending wiki reuses its workspace')
+const shadowPr = must(await api('/api/okf/team/open-pr', { method: 'POST', body: { id: shadow.record.id } }), 'open the missing setup PR')
+check(shadowPr.pr?.number !== undefined && shadowPr.files.includes('shadow/SCHEMA.md') && shadowPr.files.includes('AGENTS.md'), `setup PR opened later: ${JSON.stringify(shadowPr)}`)
+for (const pull of pulls) if (pull.number === shadowPr.pr?.number) pull.state = 'closed'
 
 // After merge the registry lists it with its columns.
 git(origin, 'update-ref', 'refs/heads/main', `refs/heads/${created.record.branch}`)

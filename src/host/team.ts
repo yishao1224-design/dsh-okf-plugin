@@ -1485,7 +1485,7 @@ export function openTeam(options: TeamOptions): Team {
     }
   }
 
-  return { status, connect, refresh, wiki, pulls, create, maintain, changes, openPr, attach, publish, setupHub, initialize, sync }
+  return { status, connect, refresh, wiki, pulls, create, maintain: openRound, changes, openPr, attach, publish, setupHub, initialize, sync }
 }
 
 /**
