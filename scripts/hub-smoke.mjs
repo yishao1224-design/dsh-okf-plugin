@@ -64,7 +64,19 @@ git(work, 'clone', '-q', '--bare', seed, origin)
 git(origin, 'symbolic-ref', 'HEAD', 'refs/heads/main')
 
 const URL_ = 'https://github.acme.com/acme/hub'
-process.env.GIT_CONFIG_COUNT = '2'
+// The Payments code repository (registry Repo column), for Initialize from code.
+const codeSeed = join(work, 'code-seed')
+mkdirSync(join(codeSeed, 'src'), { recursive: true })
+writeFileSync(join(codeSeed, 'README.md'), '# payments-service\n\nCard and wallet payments.\n')
+writeFileSync(join(codeSeed, 'src', 'main.ts'), 'export function pay(): void {}\n')
+git(codeSeed, 'init', '-q')
+git(codeSeed, 'add', '-A')
+git(codeSeed, 'commit', '-qm', 'code')
+const codeOrigin = join(work, 'code.git')
+git(work, 'clone', '-q', '--bare', codeSeed, codeOrigin)
+process.env.GIT_CONFIG_COUNT = '3'
+process.env.GIT_CONFIG_KEY_2 = `url.${pathToFileURL(codeOrigin).href}.insteadOf`
+process.env.GIT_CONFIG_VALUE_2 = 'https://github.acme.com/pay/payments-service'
 process.env.GIT_CONFIG_KEY_0 = `url.${pathToFileURL(origin).href}.insteadOf`
 process.env.GIT_CONFIG_VALUE_0 = URL_
 process.env.GIT_CONFIG_KEY_1 = 'protocol.file.allow'
@@ -211,8 +223,23 @@ check(ci.status === 1 && ci.stdout.includes('project wiki: payments') && ci.stdo
 published = must(await api('/api/okf/team/publish', { method: 'POST', body: { folder: 'payments' } }), 'publish again')
 check(published.unchanged === true && published.pr === undefined, `publishing an unchanged bundle proposes nothing: ${JSON.stringify(published.prError ?? published.unchanged)}`)
 
+// ── Initialize from code: a read-only checkout in .code/, outside every pull request ──
+const init = must(await api('/api/okf/team/initialize', { method: 'POST', body: { folder: 'payments' } }), 'initialize')
+check(init.record.id === record.id && init.initialize?.code === '.code/payments' && init.initialize.repo === 'https://github.acme.com/pay/payments-service' && /^[0-9a-f]{40}$/.test(init.initialize.commit), `initialize: ${JSON.stringify(init.initialize ?? init)}`)
+check(existsSync(join(ws, '.code', 'payments', 'src', 'main.ts')) && /^\/\.code\/$/m.test(readFileSync(join(ws, '.git', 'info', 'exclude'), 'utf8')) && !git(ws, 'status', '--porcelain').includes('.code'), 'the code is checked out and ignored')
+const prompt = init.initialize?.prompt ?? ''
+check(prompt.includes('`.code/payments/`') && prompt.includes('`payments/`') && prompt.includes('lifecycle: draft') && prompt.includes('generated: { by: dsh/smoke') && prompt.includes(`https://github.acme.com/pay/payments-service/blob/${init.initialize?.commit ?? ''}/<path>`) && prompt.includes('Never edit anything under `.code/`'), `prompt: ${prompt}`)
+writeFileSync(join(ws, 'payments', 'concepts', 'overview.md'), readFileSync(join(ws, 'payments', 'concepts', 'refunds.md'), 'utf8').replace(/Refunds/g, 'Overview'))
+pr = must(await api('/api/okf/team/open-pr', { method: 'POST', body: { id: record.id } }), 'open-pr after initialize')
+check(!pr.files.some(path => path.startsWith('.code/')) && !pr.notes.some(note => note.includes('.code')), `the checkout stays out of the pull request: ${pr.files.join(', ')} | ${pr.notes.join(' | ')}`)
+answer: {
+  const noRepo = await api('/api/okf/team/initialize', { method: 'POST', body: { folder: 'ledger' } })
+  check(noRepo.status !== 200, `a project without a code repository is refused: ${JSON.stringify(noRepo.body)}`)
+}
+
 // ── New project wiki: a bundle at the root plus a registry row, one PR ──
-const created = must(await api('/api/okf/team/create', { method: 'POST', body: { name: 'Settlement', template: 'copy:payments', repo: 'https://github.acme.com/pay/settlement', owner: '@carol', summary: 'Daily settlement | batches' } }), 'create')
+const created = must(await api('/api/okf/team/create', { method: 'POST', body: { name: 'Settlement', template: 'copy:payments', repo: 'https://github.acme.com/pay/settlement', owner: '@carol', summary: 'Daily settlement | batches', initialize: true } }), 'create')
+check(created.initialize === undefined && typeof created.initializeError === 'string', `an unreachable code repository does not stop New project wiki: ${created.initializeError}`)
 const nws = created.workspace
 check(created.record.wiki === 'settlement' && created.entry.root === join(nws, 'settlement'), `create: ${JSON.stringify(created.record)}`)
 check(created.prError === undefined && created.pr?.files.includes('AGENTS.md') && created.pr.files.includes('settlement/SCHEMA.md') && created.pr.eligible === false && created.pr.reasons.some(reason => reason.includes('AGENTS.md')), `setup PR: ${JSON.stringify(created.pr ?? created.prError)}`)
@@ -236,9 +263,9 @@ check(settlement?.name === 'Settlement' && settlement.owner === '@carol' && sett
 // ── An empty repository: connect, then Set up the hub ──
 git(work, 'init', '-q', '--bare', emptyOrigin)
 const EMPTY_URL = 'https://github.acme.com/acme/empty'
-process.env.GIT_CONFIG_COUNT = '3'
-process.env.GIT_CONFIG_KEY_2 = `url.${pathToFileURL(emptyOrigin).href}.insteadOf`
-process.env.GIT_CONFIG_VALUE_2 = EMPTY_URL
+process.env.GIT_CONFIG_COUNT = '4'
+process.env.GIT_CONFIG_KEY_3 = `url.${pathToFileURL(emptyOrigin).href}.insteadOf`
+process.env.GIT_CONFIG_VALUE_3 = EMPTY_URL
 status = must(await api('/api/okf/team/connect', { method: 'POST', body: { url: EMPTY_URL, ref: 'main' } }), 'connect empty')
 check(status.empty === true && status.commit === undefined && status.wikis.length === 0 && status.baseBranch === 'main', `an empty repository connects: ${JSON.stringify(status)}`)
 status = must(await api('/api/okf/team/refresh', { method: 'POST', body: {} }), 'refresh empty')

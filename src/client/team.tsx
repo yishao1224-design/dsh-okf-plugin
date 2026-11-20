@@ -234,7 +234,7 @@ function WikisTab({ store, state, data, t, onCreate }: { readonly store: OkfStor
  */
 function WikiDetailPane({ store, state, data, wiki, t }: { readonly store: OkfStore, readonly state: OkfState, readonly data: TeamStatus, readonly wiki: ProjectWiki, readonly t: T }): ReactNode {
   const [tab, setTab] = useState<'pulls' | 'pages' | 'review'>('pulls')
-  const [busy, setBusy] = useState<'maintain' | 'preview' | 'publish' | undefined>(undefined)
+  const [busy, setBusy] = useState<'maintain' | 'preview' | 'publish' | 'initialize' | undefined>(undefined)
   const [error, setError] = useState<string | undefined>(undefined)
   const detail = state.team.wikis[wiki.folder]
   useEffect(() => {
@@ -248,6 +248,19 @@ function WikiDetailPane({ store, state, data, wiki, t }: { readonly store: OkfSt
     store.maintainWiki(wiki.folder).then((outcome) => {
       setBusy(undefined)
       if (!outcome.opened) setError(manualText(outcome, t))
+    }, (failure: unknown) => {
+      setBusy(undefined)
+      setError((failure as Error).message)
+    })
+  }
+  const initialize = (): void => {
+    setBusy('initialize')
+    setError(undefined)
+    store.initializeWiki(wiki.folder).then((outcome) => {
+      setBusy(undefined)
+      if (!outcome.opened) setError(manualText(outcome, t))
+      const notice = initText(outcome, t)
+      if (notice !== undefined) store.setNotice(notice)
     }, (failure: unknown) => {
       setBusy(undefined)
       setError((failure as Error).message)
@@ -311,6 +324,7 @@ function WikiDetailPane({ store, state, data, wiki, t }: { readonly store: OkfSt
           <Button variant="primary" disabled={busy !== undefined || wiki.missing === true} title={t('team.maintainHint')} onClick={maintain}>
             {busy === 'maintain' ? t('team.opening') : record === undefined ? t('team.maintain') : t('team.maintainOpen')}
           </Button>
+          <Button disabled={busy !== undefined || wiki.missing === true || wiki.repo === undefined} title={wiki.repo === undefined ? t('team.initNoRepo') : t('team.initHint')} onClick={initialize}>{busy === 'initialize' ? t('team.initializing') : t('team.initialize')}</Button>
           <Button disabled={busy !== undefined || wiki.missing === true} title={t('team.publishHint')} onClick={publish}>{busy === 'publish' ? t('team.publishing') : t('team.publish')}</Button>
           <Button disabled={busy !== undefined || wiki.missing === true} title={t('team.previewHint')} onClick={preview}>{busy === 'preview' ? t('preview.loading') : t('team.preview')}</Button>
         </div>
@@ -429,6 +443,21 @@ function Pointer({ hub, wiki, t }: { readonly hub: string, readonly wiki: Projec
  * @param t - translate seat.
  * @returns the text.
  */
+/**
+ * What to tell the user after Initialize from code.
+ * @param outcome - the open outcome.
+ * @param t - translator.
+ * @returns the notice, or undefined when nothing was initialized.
+ */
+function initText(outcome: OpenOutcome, t: T): { kind: 'ok' | 'error', text: string } | undefined {
+  const answer = outcome.answer
+  if (answer.initializeError !== undefined) return { kind: 'error', text: t('team.initFailed', { reason: answer.initializeError }) }
+  if (answer.initialize === undefined) return undefined
+  if (outcome.prefilled === true) return { kind: 'ok', text: t('team.initPrefilled', { code: answer.initialize.code }) }
+  void navigator.clipboard?.writeText(answer.initialize.prompt).catch(() => undefined)
+  return { kind: 'ok', text: `${t('team.initCopied', { code: answer.initialize.code })}\n\n${answer.initialize.prompt}` }
+}
+
 function manualText(outcome: OpenOutcome, t: T): string {
   const base = t('edit.manual', { path: outcome.answer.workspace, name: outcome.answer.entry.name })
   return outcome.reason === undefined || outcome.reason === 'unavailable' ? base : `${base}\n${t('edit.manualReason', { reason: outcome.reason })}`
@@ -593,6 +622,7 @@ function NewWikiDialog({ store, data, t, onClose }: { readonly store: OkfStore, 
   const [repo, setRepo] = useState('')
   const [owner, setOwner] = useState('')
   const [summary, setSummary] = useState('')
+  const [initialize, setInitialize] = useState(true)
   const firstWiki = data.wikis[0]?.folder
   const [template, setTemplate] = useState(firstWiki === undefined ? 'default' : `copy:${firstWiki}`)
   const [busy, setBusy] = useState(false)
@@ -603,12 +633,13 @@ function NewWikiDialog({ store, data, t, onClose }: { readonly store: OkfStore, 
   const submit = (): void => {
     setBusy(true)
     setError(undefined)
-    store.createWiki({ name: name.trim(), folder: shownFolder, template, ...repo.trim() === '' ? {} : { repo: repo.trim() }, ...owner.trim() === '' ? {} : { owner: owner.trim() }, ...summary.trim() === '' ? {} : { summary: summary.trim() } }).then((outcome) => {
+    store.createWiki({ name: name.trim(), folder: shownFolder, template, ...repo.trim() === '' ? {} : { repo: repo.trim() }, ...owner.trim() === '' ? {} : { owner: owner.trim() }, ...summary.trim() === '' ? {} : { summary: summary.trim() }, ...initialize && repo.trim() !== '' ? { initialize: true } : {} }).then((outcome) => {
       setBusy(false)
+      const init = initText(outcome, t)
       const prText = outcome.answer.pr?.pr !== undefined
         ? t('team.createdPr', { number: outcome.answer.pr.pr.number })
         : outcome.answer.prError !== undefined ? t('team.createdNoPr', { reason: outcome.answer.prError }) : ''
-      store.setNotice({ kind: outcome.answer.prError === undefined ? 'ok' : 'error', text: `${t('team.created', { name: outcome.answer.record.wikiName, branch: outcome.answer.record.branch })} ${prText}${outcome.opened ? '' : `\n${manualText(outcome, t)}`}` })
+      store.setNotice({ kind: outcome.answer.prError === undefined ? 'ok' : 'error', text: `${t('team.created', { name: outcome.answer.record.wikiName, branch: outcome.answer.record.branch })} ${prText}${outcome.opened ? '' : `\n${manualText(outcome, t)}`}${init === undefined ? '' : `\n${init.text}`}` })
       onClose()
     }, (failure: unknown) => {
       setBusy(false)
@@ -641,6 +672,10 @@ function NewWikiDialog({ store, data, t, onClose }: { readonly store: OkfStore, 
               <input id="okf-new-summary" style={st('input')} value={summary} onChange={(event) => { setSummary(event.target.value) }} />
             </div>
           </div>
+          <label style={{ display: 'flex', gap: 8, alignItems: 'flex-start', marginTop: 10, fontSize: 13, opacity: repo.trim() === '' ? 0.5 : 1 }}>
+            <input type="checkbox" checked={initialize && repo.trim() !== ''} disabled={repo.trim() === ''} onChange={(event) => { setInitialize(event.target.checked) }} />
+            <span>{t('team.newInitialize')}<br /><span style={st('note')}>{t('team.newInitializeHint')}</span></span>
+          </label>
           <label style={st('label')} htmlFor="okf-new-template">{t('team.newTemplate')}</label>
           <select id="okf-new-template" style={{ ...st('select'), maxWidth: '100%' }} value={template} onChange={(event) => { setTemplate(event.target.value) }}>
             {data.wikis.map(wiki => <option key={wiki.folder} value={`copy:${wiki.folder}`}>{t('team.templateCopy', { name: wiki.name })}</option>)}

@@ -306,7 +306,7 @@ export const handlers: Readonly<Record<string, { methods: readonly ('GET' | 'POS
     methods: ['POST'],
     handle: route(['POST'], async (request, { team }) => {
       const record = await body(request)
-      return json(await team.create({ name: required(record, 'name'), ...optionalFields(record, ['folder', 'template', 'repo', 'owner', 'summary']) }))
+      return json(await team.create({ name: required(record, 'name'), ...optionalFields(record, ['folder', 'template', 'repo', 'owner', 'summary']), ...record.initialize === true ? { initialize: true } : {} }))
     }),
   },
   [ROUTES.teamMaintain]: {
@@ -314,6 +314,13 @@ export const handlers: Readonly<Record<string, { methods: readonly ('GET' | 'POS
     handle: route(['POST'], async (request, { team }) => {
       const record = await body(request)
       return json(await team.maintain(required(record, 'folder')))
+    }),
+  },
+  [ROUTES.teamInitialize]: {
+    methods: ['POST'],
+    handle: route(['POST'], async (request, { team }) => {
+      const record = await body(request)
+      return json(await team.initialize(required(record, 'folder')))
     }),
   },
   [ROUTES.teamSetup]: {

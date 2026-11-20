@@ -183,6 +183,8 @@ export interface OpenOutcome {
   readonly answer: MaintainAnswer
   readonly opened: boolean
   readonly reason?: string
+  /** The read-through task was put in the session's composer. */
+  readonly prefilled?: boolean
 }
 
 /** The store face. */
@@ -217,7 +219,9 @@ export interface OkfStore {
   loadWiki(folder: string): Promise<void>
   loadPulls(force?: boolean): Promise<void>
   /** Create a project wiki, then open a session in its new workspace. */
-  createWiki(request: { name: string, folder?: string, template?: string, repo?: string, owner?: string, summary?: string }): Promise<OpenOutcome>
+  createWiki(request: { name: string, folder?: string, template?: string, repo?: string, owner?: string, summary?: string, initialize?: boolean }): Promise<OpenOutcome>
+  /** Check out the project's code in its workspace and open a session with the read-through task prefilled. */
+  initializeWiki(folder: string): Promise<OpenOutcome>
   /** Open (or make) the project wiki's maintenance workspace and a session there. */
   maintainWiki(folder: string): Promise<OpenOutcome>
   /** kb-publish: render the wiki into published/Projects/ and open its pull request. */
@@ -329,7 +333,7 @@ export function createOkfStore(fetcher: Fetcher = (input, init) => globalThis.fe
   }
 
   /** Register the workspace, open a session there with the entry attached, and show it. */
-  const openWorkspace = async (entry: LibraryEntry, path: string): Promise<{ opened: boolean, reason?: string }> => {
+  const openWorkspace = async (entry: LibraryEntry, path: string, prompt?: string): Promise<{ opened: boolean, reason?: string, prefilled?: boolean }> => {
     const services = navigation()
     if (services === undefined) return { opened: false, reason: 'unavailable' }
     try {
@@ -338,8 +342,13 @@ export function createOkfStore(fetcher: Fetcher = (input, init) => globalThis.fe
       const sessionId = await services.uiWorkspace.connectWorkspace(workspace.workspaceId)
       await select(sessionId, entry.id)
       services.layout?.selectPanel(null)
+      if (prompt !== undefined && services.uiWorkspace.startSession !== undefined) {
+        // Reuses the same blank Session and fills its composer; the user presses send.
+        services.uiWorkspace.startSession(workspace.workspaceId, { prompt, clearPreviousDraft: true })
+        return { opened: true, prefilled: true }
+      }
       services.uiWorkspace.openSession(sessionId)
-      return { opened: true }
+      return { opened: true, prefilled: false }
     } catch (error) {
       return { opened: false, reason: (error as Error).message }
     }
@@ -347,7 +356,7 @@ export function createOkfStore(fetcher: Fetcher = (input, init) => globalThis.fe
 
   const afterMaintain = async (answer: MaintainAnswer): Promise<OpenOutcome> => {
     await Promise.all([refreshLibrary(), loadTeam()])
-    const outcome = await openWorkspace(answer.entry, answer.workspace)
+    const outcome = await openWorkspace(answer.entry, answer.workspace, answer.initialize?.prompt)
     return { answer, ...outcome }
   }
 
@@ -454,6 +463,10 @@ export function createOkfStore(fetcher: Fetcher = (input, init) => globalThis.fe
     loadPulls,
     async createWiki(request) {
       const answer = await call<MaintainAnswer>(fetcher, ROUTES.teamCreate, { method: 'POST', body: request, timeoutMs: GIT_TIMEOUT_MS * 2 })
+      return afterMaintain(answer)
+    },
+    async initializeWiki(folder) {
+      const answer = await call<MaintainAnswer>(fetcher, ROUTES.teamInitialize, { method: 'POST', body: { folder }, timeoutMs: GIT_TIMEOUT_MS * 2 })
       return afterMaintain(answer)
     },
     async maintainWiki(folder) {
