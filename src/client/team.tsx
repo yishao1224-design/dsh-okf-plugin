@@ -10,7 +10,7 @@
  */
 import { useEffect, useMemo, useState, type ReactNode } from 'react'
 import type { PanelIconProps, Translate } from '../types/contract.ts'
-import type { LibraryEntry, MaintainRecord, OpenPrAnswer, ProjectWiki, PullView, TeamStatus, WikiPage } from '../types/okf.ts'
+import type { LibraryEntry, MaintainRecord, OpenPrAnswer, ProjectWiki, PullView, ReviewAnswer, TeamStatus, WikiPage } from '../types/okf.ts'
 import { BookIcon, Button, useOkf } from './components.tsx'
 import type { OkfInjected } from './components.tsx'
 import type { OkfKey } from './locales.ts'
@@ -401,7 +401,7 @@ function WikiDetailPane({ store, state, data, wiki, t }: { readonly store: OkfSt
       {tab !== 'pulls' && detail?.status === 'failed' && <div style={st('error')}>{detail.error}</div>}
       {tab !== 'pulls' && detail?.data === undefined && detail?.status !== 'failed' && <div style={st('empty')}>{t('preview.loading')}</div>}
       {tab === 'pages' && detail?.data !== undefined && <PageList pages={pages} t={t} empty={t('team.noPages')} />}
-      {tab === 'review' && detail?.data !== undefined && <PageList pages={needsReview} t={t} empty={t('team.noReview')} />}
+      {tab === 'review' && detail?.data !== undefined && <PageList pages={needsReview} t={t} empty={t('team.noReview')} onMark={paths => store.reviewPages(wiki.folder, paths).then((answer) => { store.setNotice(reviewNotice(answer, t)) })} />}
       {data.team !== undefined && <Pointer hub={data.team.url} wiki={wiki} t={t} />}
     </div>
   )
@@ -499,6 +499,23 @@ function Pointer({ hub, wiki, t }: { readonly hub: string, readonly wiki: Projec
  * @param t - translate seat.
  * @returns the text.
  */
+/**
+ * What to tell the user after Mark reviewed.
+ * @param answer - the host's answer.
+ * @param t - translate.
+ * @returns the notice.
+ */
+export function reviewNotice(answer: ReviewAnswer, t: T): { kind: 'ok' | 'error', text: string } {
+  const count = answer.marked.length
+  const lead = answer.prError !== undefined
+    ? t('team.reviewFailed', { count, who: answer.reviewer, reason: answer.prError })
+    : answer.pr?.pr !== undefined
+      ? t('team.reviewDone', { count, who: answer.reviewer, number: answer.pr.pr.number })
+      : t('team.reviewPushed', { count, who: answer.reviewer, branch: answer.record.branch })
+  const skipped = answer.skipped.length === 0 ? '' : `\n${t('team.reviewSkipped', { list: answer.skipped.join(', ') })}`
+  return { kind: answer.prError === undefined && count > 0 ? 'ok' : 'error', text: `${lead}${skipped}` }
+}
+
 /**
  * Where a project's code stands against its wiki, for a tooltip.
  * @param wiki - the project wiki.
@@ -623,18 +640,53 @@ function PullBadge({ pull, t }: { readonly pull: PullView, readonly t: T }): Rea
  * @param props - the pages.
  * @returns the list.
  */
-function PageList({ pages, t, empty }: { readonly pages: readonly WikiPage[], readonly t: T, readonly empty: string }): ReactNode {
+function PageList({ pages, t, empty, onMark }: { readonly pages: readonly WikiPage[], readonly t: T, readonly empty: string, readonly onMark?: (paths: readonly string[]) => Promise<void> }): ReactNode {
   const [filter, setFilter] = useState('')
+  const [picked, setPicked] = useState<ReadonlySet<string>>(new Set())
+  const [busy, setBusy] = useState<string | undefined>(undefined)
+  const [error, setError] = useState<string | undefined>(undefined)
   const shown = useMemo(() => {
     const needle = filter.trim().toLowerCase()
     return needle === '' ? pages : pages.filter(page => `${page.title} ${page.path}`.toLowerCase().includes(needle))
   }, [pages, filter])
   if (pages.length === 0) return <div style={st('empty')}>{empty}</div>
+  const mark = (paths: readonly string[], key: string): void => {
+    if (onMark === undefined || paths.length === 0) return
+    setBusy(key)
+    setError(undefined)
+    onMark(paths).then(() => {
+      setBusy(undefined)
+      setPicked(new Set())
+    }, (failure: unknown) => {
+      setBusy(undefined)
+      setError((failure as Error).message)
+    })
+  }
+  const toggle = (path: string): void => {
+    setPicked((before) => {
+      const next = new Set(before)
+      if (next.has(path)) next.delete(path)
+      else next.add(path)
+      return next
+    })
+  }
+  const allShown = shown.length > 0 && shown.every(page => picked.has(page.path))
   return (
     <div>
       <input style={{ ...st('input'), margin: '6px 0' }} value={filter} placeholder={t('team.filterPages')} onChange={(event) => { setFilter(event.target.value) }} />
+      {onMark !== undefined && (
+        <div style={{ ...st('row'), margin: '2px 0 6px' }}>
+          <label style={{ ...st('row'), gap: 6, cursor: 'pointer' }}>
+            <input type="checkbox" checked={allShown} onChange={() => { setPicked(allShown ? new Set() : new Set(shown.map(page => page.path))) }} />
+            <span style={st('note')}>{t('team.selectAll')}</span>
+          </label>
+          <Button variant="primary" disabled={busy !== undefined || picked.size === 0} title={t('team.markHint')} onClick={() => { mark([...picked], 'batch') }}>{busy === 'batch' ? t('team.marking') : t('team.markSelected', { count: picked.size })}</Button>
+        </div>
+      )}
+      {error !== undefined && <div style={{ ...st('error'), marginBottom: 6 }}>{error}</div>}
       {shown.map(page => (
         <div key={page.path} style={st('twRow')}>
+          {onMark !== undefined && <input type="checkbox" style={{ marginRight: 8 }} checked={picked.has(page.path)} onChange={() => { toggle(page.path) }} aria-label={page.title} />}
           <div style={st('twRowMain')}>
             <div style={st('twRowTitle')}>
               <span>{page.title}</span>
@@ -645,6 +697,7 @@ function PageList({ pages, t, empty }: { readonly pages: readonly WikiPage[], re
             </div>
             <div style={st('twMono')}>{page.path}{page.type === undefined ? '' : ` · ${page.type}`}</div>
           </div>
+          {onMark !== undefined && <Button style={{ minHeight: 24 }} disabled={busy !== undefined} title={t('team.markHint')} onClick={() => { mark([page.path], page.path) }}>{busy === page.path ? t('team.marking') : t('team.markReviewed')}</Button>}
         </div>
       ))}
     </div>

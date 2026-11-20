@@ -105,7 +105,7 @@ host.apply({
   },
 }, { libraryDir, indexChars: 2000 })
 
-check(routes.size === 23, `expected 23 routes, saw ${String(routes.size)}`)
+check(routes.size === 24, `expected 24 routes, saw ${String(routes.size)}`)
 check([...routes.values()].every(route => route.path.startsWith('/api/okf/') && route.requestBody === 'buffered'), 'every route must sit under /api/okf with a buffered body')
 check(injected.join('|') === 'systemPrompt', `optional services ${injected.join('|')}`)
 check(contexts.length === 1 && contexts[0].name === 'okf:session-bundle' && typeof contexts[0].text === 'function', 'one prompt context with a text callback')

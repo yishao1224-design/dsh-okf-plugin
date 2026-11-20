@@ -577,6 +577,34 @@ function PageRow({ page, onOpen }: { readonly page: PageSummary, readonly onOpen
 }
 
 /**
+ * Mark reviewed, for a Team Wiki page being read in the preview.
+ * @param props - store, the project wiki's folder, the page.
+ * @returns the button and what it did.
+ */
+function MarkReviewed({ store, folder, path, t }: { readonly store: OkfStore, readonly folder: string, readonly path: string, readonly t: T }): ReactNode {
+  const [state, setState] = useState<{ busy: boolean, text?: string, error?: boolean }>({ busy: false })
+  const mark = (): void => {
+    setState({ busy: true })
+    store.reviewPages(folder, [path]).then((answer) => {
+      const text = answer.prError !== undefined
+        ? t('team.reviewFailed', { count: answer.marked.length, who: answer.reviewer, reason: answer.prError })
+        : answer.pr?.pr !== undefined
+          ? t('team.reviewDone', { count: answer.marked.length, who: answer.reviewer, number: answer.pr.pr.number })
+          : t('team.reviewPushed', { count: answer.marked.length, who: answer.reviewer, branch: answer.record.branch })
+      setState({ busy: false, text, error: answer.prError !== undefined || answer.marked.length === 0 })
+    }, (failure: unknown) => {
+      setState({ busy: false, text: (failure as Error).message, error: true })
+    })
+  }
+  return (
+    <span style={{ ...st('row'), marginLeft: 'auto', gap: 8 }}>
+      {state.text !== undefined && <span style={state.error === true ? st('error') : st('note')}>{state.text}</span>}
+      <Button variant="primary" disabled={state.busy} title={t('team.markHint')} onClick={mark}>{state.busy ? t('team.marking') : t('team.markReviewed')}</Button>
+    </span>
+  )
+}
+
+/**
  * One page: back link, frontmatter, rendered body.
  * @param props - the entry and page path.
  * @returns the page.
@@ -598,6 +626,7 @@ function PageView({ store, entry, path, summary, t }: { readonly store: OkfStore
       <div style={{ ...st('row'), marginBottom: 10 }}>
         <Button onClick={() => { store.openPage(undefined) }}>{`← ${t('action.back')}`}</Button>
         <span style={st('pagePath')}>{path}</span>
+        {(entry.teamWiki ?? entry.team?.wiki) !== undefined && known !== undefined && !known.reserved && <MarkReviewed store={store} folder={entry.teamWiki ?? entry.team?.wiki ?? ''} path={path} t={t} />}
       </div>
       {page.status === 'loading' && <div style={st('empty')}>{t('preview.loading')}</div>}
       {page.status === 'error' && <div style={st('error')}>{t('error.generic', { message: page.message })}</div>}

@@ -316,6 +316,14 @@ export const handlers: Readonly<Record<string, { methods: readonly ('GET' | 'POS
       return json(await team.maintain(required(record, 'folder')))
     }),
   },
+  [ROUTES.teamReview]: {
+    methods: ['POST'],
+    handle: route(['POST'], async (request, { team }) => {
+      const record = await body(request)
+      const paths = Array.isArray(record.paths) ? record.paths.filter((path): path is string => typeof path === 'string') : []
+      return json(await team.review(required(record, 'folder'), paths))
+    }),
+  },
   [ROUTES.teamSync]: {
     methods: ['POST'],
     handle: route(['POST'], async (request, { team }) => {
