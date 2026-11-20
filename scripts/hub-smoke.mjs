@@ -17,7 +17,7 @@
  * Needs a knowledgeAgent checkout (see team-smoke.mjs). Usage: node scripts/hub-smoke.mjs
  */
 import { execFileSync, spawnSync } from 'node:child_process'
-import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from 'node:fs'
 import { createServer } from 'node:http'
 import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
@@ -376,8 +376,13 @@ check(cached.statusChanged === undefined, 'a cached answer does not report the m
 }
 
 // The next round reuses the project's one folder, reset to the merged main on a new branch.
-writeFileSync(join(first.workspace, 'payments', 'scratch.md'), 'left over\n')
+// An earlier version kept it as work/payments: the next round moves it under the wiki- prefix.
+check(first.workspace.endsWith(join('work', 'wiki-payments')), `wiki workspaces are marked by their folder name: ${first.workspace}`)
+const unprefixed = join(first.workspace, '..', 'payments')
+renameSync(first.workspace, unprefixed)
+writeFileSync(join(unprefixed, 'payments', 'scratch.md'), 'left over\n')
 const round2 = must(await api('/api/okf/team/maintain', { method: 'POST', body: { folder: 'payments' } }), 'maintain after merge')
+check(!existsSync(unprefixed), 'the unprefixed folder moved')
 check(round2.created === true && round2.workspace === first.workspace && round2.record.branch !== first.record.branch && round2.entry.id === first.entry.id, `one folder per project: ${round2.workspace} vs ${first.workspace}`)
 check(git(round2.workspace, 'rev-parse', 'HEAD') === git(emptyOrigin, 'rev-parse', 'main') && git(round2.workspace, 'rev-parse', '--abbrev-ref', 'HEAD') === round2.record.branch, 'reset to the latest main on the new branch')
 check(!existsSync(join(round2.workspace, 'payments', 'scratch.md')) && git(round2.workspace, 'stash', 'list').includes('dsh-okf: left over on'), 'leftovers are stashed, not lost')

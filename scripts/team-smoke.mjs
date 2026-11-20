@@ -173,7 +173,7 @@ check(answer.entry.id === 'team-main-okf-payments' && answer.entry.teamWiki === 
 const maintained = must(await api('/api/okf/team/maintain', { method: 'POST', body: { folder: 'okf/payments' } }), 'maintain')
 const record = maintained.record
 const ws = maintained.workspace
-check(maintained.created === true && /^wiki\/payments-\d{12}-[0-9a-f]{4}$/.test(record.branch) && ws === join(libraryDir, 'team', 'work', 'okf-payments') && record.entryId === 'team-okf-payments', `maintain: ${JSON.stringify(record)}`)
+check(maintained.created === true && /^wiki\/payments-\d{12}-[0-9a-f]{4}$/.test(record.branch) && ws === join(libraryDir, 'team', 'work', 'wiki-okf-payments') && record.entryId === 'team-okf-payments', `maintain: ${JSON.stringify(record)}`)
 check(git(ws, 'rev-parse', '--abbrev-ref', 'HEAD') === record.branch, 'the workspace is on its own branch')
 check(maintained.entry.team?.maintainId === record.id && maintained.entry.workspace === ws && maintained.entry.root === join(ws, 'okf', 'payments'), `maintain entry: ${JSON.stringify(maintained.entry)}`)
 const again = must(await api('/api/okf/team/maintain', { method: 'POST', body: { folder: 'okf/payments' } }), 'maintain again')

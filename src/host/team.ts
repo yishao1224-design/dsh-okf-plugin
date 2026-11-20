@@ -9,14 +9,14 @@
  *     <libraryDir>/team/
  *       team.json          the connected repository + maintenance workspaces
  *       main/              a clone of the base branch, read for the page (never edited)
- *       work/<folder>/     one clone per project wiki, reused for each round on a new wiki/… branch
+ *       work/wiki-<folder>/ one clone per project wiki, reused for each round on a new wiki/… branch
  *
  * The page lists the project wikis with their review counts (read from
  * `main/`), the open pull requests that touch each one (GitHub REST for the
  * list and checks; git itself for the files and the auto-merge verdict, the
  * same {@link judge} CI runs), and starts two kinds of work:
  *
- * - **Maintain** clones the repository into `work/<folder>` (or, after the
+ * - **Maintain** clones the repository into `work/wiki-<folder>` (or, after the
  *   last round's pull request finished, resets that clone to the latest base)
  *   on a new branch and
  *   registers the project wiki there as a library entry with `workspace` set,
@@ -161,6 +161,8 @@ const NON_BUNDLE_DIRS = new Set(['.git', '.github', '.claude', '.agents', '.curs
 const PULLS_TTL_MS = 60_000
 /** Pages read per wiki, at most. */
 const PAGE_CAP = 5000
+/** Marks a maintenance folder, and so its DSH workspace, as a wiki's. */
+const WORKSPACE_PREFIX = 'wiki-'
 /** How long a review holds before the page is due for another look. */
 const REVIEW_VALID_DAYS = 182
 
@@ -1038,8 +1040,14 @@ export function openTeam(options: TeamOptions): Team {
     }
   }
 
-  /** A project wiki's one maintenance folder, reused round after round: `work/<folder>`. */
-  const workspaceDirOf = (folder: string): string => join(workDir, wikiSlug(folder.replaceAll('/', '-')) || 'wiki')
+  /**
+   * A project wiki's one maintenance folder, reused round after round:
+   * `work/wiki-<folder>`. DSH names a workspace after its folder, so the
+   * prefix is what marks it as a wiki workspace in the sidebar.
+   */
+  const workspaceDirOf = (folder: string): string => join(workDir, `${WORKSPACE_PREFIX}${wikiSlug(folder.replaceAll('/', '-')) || 'wiki'}`)
+  /** Where versions before the prefix kept it: `work/<folder>`. */
+  const unprefixedDirOf = (folder: string): string => join(workDir, wikiSlug(folder.replaceAll('/', '-')) || 'wiki')
 
   /**
    * The project wiki's open workspace, if it still is one: a workspace whose
@@ -1096,6 +1104,12 @@ export function openTeam(options: TeamOptions): Team {
     const target = workspaceDirOf(folder)
     const busy = data.maintains.find(record => record.closed === undefined && record.workspace === canonical(target))
     if (busy !== undefined) throw new LibraryError('busy', `${busy.wiki} is still being maintained in ${target}.`, 409)
+    // Move the folder an earlier version kept without the prefix, once nothing open uses it.
+    const unprefixed = unprefixedDirOf(folder)
+    if (!(await exists(target)) && await exists(join(unprefixed, '.git'))
+      && !data.maintains.some(record => record.closed === undefined && record.workspace === canonical(unprefixed))) {
+      await rename(unprefixed, target).catch(() => undefined)
+    }
     let reused = false
     if (await exists(join(target, '.git'))) {
       const url = await git(target, ['config', '--get', 'remote.origin.url']).catch(() => '')
