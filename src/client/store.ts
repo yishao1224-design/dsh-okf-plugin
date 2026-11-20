@@ -11,7 +11,7 @@ import type {
   BundleSummary, ChangesAnswer, EditWorkspaceAnswer, FetchRequest, LibraryEntry, MaintainAnswer, OpenPrAnswer, PageContent, PublishAnswer, ReviewAnswer, SyncAnswer,
   PullsAnswer, SessionSelection, TeamStatus, WikiDetail,
 } from '../types/okf.ts'
-import type { LayoutService, UiWorkspaceService, WorkspacesService } from '../types/contract.ts'
+import type { LayoutService, UiWorkspaceService, WorkspacesService, WorkspaceView } from '../types/contract.ts'
 
 /** Deadline for an ordinary call. */
 export const REQUEST_TIMEOUT_MS = 15_000
@@ -240,6 +240,34 @@ export interface OkfStore {
 }
 
 /**
+ * Title a project wiki's maintenance Workspace `📘 <project> wiki`, so it stands
+ * out in the sidebar (the row's icon is fixed; the title is all a plugin can
+ * set). Only a title still at its default (the folder name) is changed, and a
+ * clash with another Workspace's title just leaves it as it is.
+ * @param workspaces - DSH's service.
+ * @param workspace - the Workspace just registered.
+ * @param entry - the library entry it is for.
+ */
+export async function markWikiWorkspace(workspaces: WorkspacesService, workspace: WorkspaceView, entry: LibraryEntry): Promise<void> {
+  const project = entry.team?.project
+  if (project === undefined || workspaces.rename === undefined) return
+  const title = wikiWorkspaceTitle(project)
+  const current = workspaces.list.getSnapshot().items.find(item => item.workspaceId === workspace.workspaceId)?.title ?? workspace.title
+  const folder = workspace.path.split(/[\\/]/).filter(part => part !== '').at(-1) ?? ''
+  if (current === title || current !== folder) return
+  await workspaces.rename(workspace.workspaceId, title).catch(() => undefined)
+}
+
+/**
+ * The sidebar title of a project wiki's maintenance Workspace.
+ * @param project - the project's name.
+ * @returns the title.
+ */
+export function wikiWorkspaceTitle(project: string): string {
+  return `📘 ${project} wiki`
+}
+
+/**
  * Create the store.
  * @param fetcher - the fetch to use; defaults to the page's global one.
  * @param navigation - DSH's Workspace services when reachable; read at call time, since they can arrive after the store.
@@ -348,6 +376,7 @@ export function createOkfStore(fetcher: Fetcher = (input, init) => globalThis.fe
     try {
       const workspace = await services.workspaces.create({ path })
       await waitForWorkspace(services.workspaces, workspace.workspaceId)
+      await markWikiWorkspace(services.workspaces, workspace, entry)
       const sessionId = await services.uiWorkspace.connectWorkspace(workspace.workspaceId)
       await select(sessionId, entry.id)
       services.layout?.selectPanel(null)
