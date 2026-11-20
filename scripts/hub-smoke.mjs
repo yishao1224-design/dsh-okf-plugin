@@ -113,7 +113,7 @@ const server = createServer((request, response) => {
       const pull = pulls[Number(match[1]) - 1]
       if (pull === undefined) return send(404, { message: 'Not Found' })
       if (request.method === 'PATCH') {
-        Object.assign(pull, { title: json.title, body: json.body })
+        Object.assign(pull, { ...'title' in json ? { title: json.title } : {}, body: json.body })
         git(bare, 'update-ref', `refs/pull/${String(pull.number)}/head`, `refs/heads/${pull.head}`)
       }
       return send(200, view(pull))
@@ -184,7 +184,10 @@ writeFileSync(join(ws, 'payments', 'concepts', 'refunds.md'), [
   'status: draft', 'lifecycle: draft', `created: ${today}`, `updated: ${today}`, 'generated:', '  by: dsh/smoke', `  at: ${today}`, 'tags: []', '---', '',
   '# Refunds', '', 'Refunds go back to the original card. See [the lifecycle](/concepts/knowledge-lifecycle.md).', '',
 ].join('\n'))
-let pr = must(await api('/api/okf/team/open-pr', { method: 'POST', body: { id: record.id, title: 'Add refunds' } }), 'open-pr 1')
+const suggested = must(await api('/api/okf/team/changes', { query: { id: record.id } }), 'changes').suggested
+check(suggested?.title === 'Add Refunds' && suggested.summary.startsWith('In the Payments wiki, adds 1 page.') && suggested.summary.includes('- Refunds — How a card payment is refunded. (`concepts/refunds.md`)'), `suggested PR text: ${JSON.stringify(suggested)}`)
+let pr = must(await api('/api/okf/team/open-pr', { method: 'POST', body: { id: record.id } }), 'open-pr 1')
+check(pulls[0]?.title === 'Add Refunds' && pulls[0].body.includes('- Refunds — How a card payment is refunded.'), `the suggestion is used when the dialog is left empty: ${pulls[0]?.title} ${pulls[0]?.body.slice(0, 300)}`)
 check(pr.eligible === true && pr.pr?.number === 1 && pr.files.every(path => path.startsWith('payments/')), `pr 1: ${JSON.stringify(pr)}`)
 check(pulls[0]?.labels.includes('wiki-auto-merge') && seen.some(line => line === 'POST /api/v3/repos/acme/hub/pulls'), `pr 1 on GHE: ${seen.join(' | ')}`)
 const clone = join(work, 'ci')

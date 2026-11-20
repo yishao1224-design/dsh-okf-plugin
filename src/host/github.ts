@@ -119,10 +119,11 @@ export class GitHub {
     const existing = await this.call('GET', `/pulls?state=open&head=${encodeURIComponent(`${this.target.owner}:${input.head}`)}`, undefined, signal) as { number: number, html_url: string }[]
     const open = existing[0]
     if (open !== undefined) {
-      await this.call('PATCH', `/pulls/${String(open.number)}`, { title: input.title, body: input.body }, signal)
+      // An empty title keeps the one the pull request has.
+      await this.call('PATCH', `/pulls/${String(open.number)}`, { ...input.title === '' ? {} : { title: input.title }, body: input.body }, signal)
       return { number: open.number, url: open.html_url, reused: true }
     }
-    const created = await this.call('POST', '/pulls', input, signal) as { number: number, html_url: string }
+    const created = await this.call('POST', '/pulls', { ...input, title: input.title || input.head }, signal) as { number: number, html_url: string }
     return { number: created.number, url: created.html_url, reused: false }
   }
 

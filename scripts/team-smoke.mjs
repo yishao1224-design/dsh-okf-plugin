@@ -93,7 +93,7 @@ const server = createServer((request, response) => {
       const pull = pulls[Number(match[1]) - 1]
       if (pull === undefined) return send(404, { message: 'Not Found' })
       if (request.method === 'PATCH') {
-        Object.assign(pull, { title: json.title, body: json.body })
+        Object.assign(pull, { ...'title' in json ? { title: json.title } : {}, body: json.body })
         git(origin, 'update-ref', `refs/pull/${String(pull.number)}/head`, `refs/heads/${pull.head}`)
       }
       return send(200, view(pull))
@@ -235,6 +235,7 @@ check(pr.stamped.join() === 'concepts/knowledge-lifecycle.md' && pr.eligible ===
 const reset = readFileSync(lifecycle, 'utf8')
 check(/^lifecycle: draft$/m.test(reset) && /by: dsh\/smoke/.test(reset) && reset.includes('human:alice'), 'the edited reviewed page is an unreviewed draft that keeps its history')
 check(!pulls[0].labels.includes('wiki-auto-merge') && pulls[0].body.includes('Needs a person'), 'the auto-merge label comes off')
+check(pulls[0].title === 'Add the release process page', `an update without a title keeps the pull request's title: ${pulls[0].title}`)
 git(clone, 'fetch', '-q', 'origin')
 ci = spawnSync(process.execPath, [join(root, 'lib', 'check-pr.js'), 'origin/main', `origin/${record.branch}`, 'okf'], { cwd: clone, encoding: 'utf8', env: { ...process.env, GITHUB_OUTPUT: '' } })
 check(ci.status === 1 && ci.stdout.includes('alice reviewed'), `check-pr needs a person: ${ci.status} ${ci.stdout}`)

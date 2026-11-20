@@ -40,6 +40,8 @@ import type { ChangedFile } from './eligibility.ts'
 import { parsePage, text as metaText } from './frontmatter.ts'
 import { parseRemote } from './git.ts'
 import { addRegistryRow, parseRegistry } from './registry.ts'
+import { suggestPr } from './summary.ts'
+import type { SummaryFile } from './summary.ts'
 import { adoName, publishedDir, publishedProject, renderBundle, webUrl } from './publish.ts'
 import type { BundleFile } from './publish.ts'
 import { GitHub, parseGitHubRemote } from './github.ts'
@@ -961,7 +963,31 @@ export function openTeam(options: TeamOptions): Team {
       files.push({ path: change.path, status: change.status, ...review === undefined ? {} : { review } })
     }
     const uncommitted = parseStatus(await git(record.workspace, ['status', '--porcelain=v1', '-z', '--untracked-files=all'])).length
-    return { record, files: files.sort((a, b) => a.path.localeCompare(b.path)), uncommitted }
+    const suggested = await suggestFor(record, files, mergeBase)
+    return { record, files: files.sort((a, b) => a.path.localeCompare(b.path)), uncommitted, suggested }
+  }
+
+  /** The dialog's prefilled title and summary: pages by title and description, captures, published pages. */
+  const suggestFor = async (record: MaintainRecord, files: readonly { path: string, status: 'added' | 'modified' | 'deleted' }[], mergeBase: string | undefined): Promise<{ title: string, summary: string }> => {
+    const prefix = `${record.wiki}/`
+    const own: SummaryFile[] = []
+    for (const file of files) {
+      if (!file.path.startsWith(prefix)) continue
+      const rel = file.path.slice(prefix.length)
+      let meta: Record<string, unknown> = {}
+      if (rel.endsWith('.md')) {
+        const source = file.status === 'deleted'
+          ? (mergeBase === undefined ? undefined : await git(record.workspace, ['show', `${mergeBase}:${file.path}`]).catch(() => undefined))
+          : await readFile(join(record.workspace, file.path), 'utf8').catch(() => undefined)
+        if (source !== undefined) meta = parsePage(source).meta
+      }
+      const title = metaText(meta as never, 'title')
+      const description = metaText(meta as never, 'description')
+      own.push({ path: rel, status: file.status, ...title === undefined ? {} : { title }, ...description === undefined ? {} : { description } })
+    }
+    const pub = publishedDir(record.wikiName)
+    const published = files.filter(file => file.path === `${pub}.md` || file.path.startsWith(`${pub}/`)).length
+    return suggestPr(record.wikiName, own, { ...record.isNew === true ? { isNew: true } : {}, published })
   }
 
   const openPr = (id: string, request: { title?: string, summary?: string }): Promise<OpenPrAnswer> => serial(async () => {
@@ -977,8 +1003,8 @@ export function openTeam(options: TeamOptions): Team {
     const scope = [record.wiki, publishedDir(record.wikiName), `${publishedDir(record.wikiName)}.md`, ...record.isNew === true ? ['AGENTS.md'] : []]
     const inScope = (path: string): boolean => scope.some(item => path === item || path.startsWith(`${item}/`))
     const notes: string[] = []
-    const title = request.title?.trim() || (record.pr === undefined ? `Update the ${record.wikiName} wiki` : '')
-    const summary = request.summary?.trim() || `Changes to \`${record.wiki}\` made in a DSH maintenance session.`
+    let title = request.title?.trim() ?? ''
+    let summary = request.summary?.trim() ?? ''
 
     await git(repo, ['fetch', '--quiet', 'origin', `+refs/heads/${base}:refs/remotes/origin/${base}`], token).catch(() => { notes.push(`Could not fetch origin/${base}; compared against the local copy.`) })
     const mergeBase = await git(repo, ['merge-base', 'HEAD', `origin/${base}`]).catch(() => undefined)
@@ -1042,6 +1068,13 @@ export function openTeam(options: TeamOptions): Team {
       if (tracked !== '' || await exists(join(repo, ...item.split('/')))) present.push(item)
     }
     await git(repo, ['add', '-A', '--', ...present])
+    // Nothing typed in the dialog: describe the branch's changes from the pages themselves.
+    if (summary === '' || (title === '' && record.pr === undefined)) {
+      const listing = mergeBase === undefined ? [] : parseNameStatus(await git(repo, ['diff', '--cached', '--name-status', '--no-renames', '-z', mergeBase]))
+      const suggested = await suggestFor(record, listing, mergeBase)
+      if (summary === '') summary = suggested.summary
+      if (title === '' && record.pr === undefined) title = suggested.title
+    }
     const staged = await git(repo, ['diff', '--cached', '--name-only'])
     if (staged !== '') {
       const email = await git(repo, ['config', 'user.email']).catch(() => '')
@@ -1055,6 +1088,7 @@ export function openTeam(options: TeamOptions): Team {
 
     // 3 · Judge the whole branch against the base, as CI will.
     const files = mergeBase === undefined ? [] : await changedFiles(repo, mergeBase, 'HEAD', token)
+
     const verdict = judge(record.wiki, files)
     const reasons = [...verdict.reasons]
     if (!hasScript) reasons.push('lint did not run')
@@ -1077,7 +1111,7 @@ export function openTeam(options: TeamOptions): Team {
         before: page.before === undefined ? 'new' : describeReview(page.before),
         after: page.after === undefined ? 'deleted' : describeReview(page.after),
       })), eligible, reasons, lint, [...stamped.map(path => `Reset to an unreviewed draft because it was edited: ${path}`), ...notes], record.id)
-      const opened = await github.openOrUpdate({ title: title || record.wikiName, body, head: record.branch, base })
+      const opened = await github.openOrUpdate({ title, body, head: record.branch, base })
       pr = opened
       if (options.autoMergeLabel !== '') {
         await github.setLabel(opened.number, options.autoMergeLabel, eligible).catch((error: unknown) => {
