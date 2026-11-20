@@ -169,6 +169,7 @@ export const ROUTES = {
   teamCreate: `${API_BASE}/team/create`,
   teamMaintain: `${API_BASE}/team/maintain`,
   teamPublish: `${API_BASE}/team/publish`,
+  teamSetup: `${API_BASE}/team/setup`,
   teamChanges: `${API_BASE}/team/changes`,
   teamOpenPr: `${API_BASE}/team/open-pr`,
   teamAttach: `${API_BASE}/team/attach`,
@@ -270,6 +271,8 @@ export interface TeamStatus {
   readonly commit?: string
   readonly refreshedAt?: string
   readonly baseBranch?: string
+  /** The repository has no commits yet: offer Set up the hub. */
+  readonly empty?: boolean
   readonly wikis: readonly ProjectWiki[]
   readonly maintains: readonly MaintainRecord[]
   /** Whether a token for the remote is set (pull requests need one). */
