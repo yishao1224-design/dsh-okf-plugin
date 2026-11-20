@@ -107,9 +107,9 @@ host.apply({
 
 check(routes.size === 24, `expected 24 routes, saw ${String(routes.size)}`)
 check([...routes.values()].every(route => route.path.startsWith('/api/okf/') && route.requestBody === 'buffered'), 'every route must sit under /api/okf with a buffered body')
-check(injected.join('|') === 'systemPrompt', `optional services ${injected.join('|')}`)
+check(injected.join('|') === 'systemPrompt|tools', `optional services ${injected.join('|')}`)
 check(contexts.length === 1 && contexts[0].name === 'okf:session-bundle' && typeof contexts[0].text === 'function', 'one prompt context with a text callback')
-check(tools.length === 0, `the plugin must register no tools, saw ${tools.map(t => t.name).join(',')}`)
+check(tools.map(t => t.name).join(',') === 'wiki_sync_from_code,wiki_open_pr' && tools.every(t => t.parameters.type === 'object' && t.parameters.additionalProperties === false && t.output.schema.type === 'object' && typeof t.output.render === 'function'), `the two Team Wiki tools, saw ${tools.map(t => t.name).join(',')}`)
 
 /**
  * Call a registered route.

@@ -11,7 +11,10 @@
  *   that becomes a DSH Workspace), and Open pull request.
  * - A system-prompt context that tells the model which bundle its session uses,
  *   where its folder is, and what its catalog holds. The model reads the pages
- *   with the Harness's own file tools; this plugin registers none.
+ *   with the Harness's own file tools.
+ * - Two model tools, `wiki_sync_from_code` and `wiki_open_pr` (see
+ *   `host/tools.ts`), so an automation task can run Sync from code and Open
+ *   pull request without the page. Reached through `ctx.inject(['tools'])`.
  *
  * `connection` is the only hard dependency. `systemPrompt` is reached through
  * `ctx.inject`, so the library and preview keep working even if a Harness build
@@ -34,6 +37,7 @@ import { LibraryError, openLibrary } from './host/library.ts'
 import type { Library } from './host/library.ts'
 import { RunError } from './host/run.ts'
 import { openTeam } from './host/team.ts'
+import { wikiTools } from './host/tools.ts'
 import type { Team } from './host/team.ts'
 import type { HostContext } from './types/contract.ts'
 import { ROUTES } from './types/okf.ts'
@@ -54,6 +58,8 @@ export interface Config {
   readonly indexChars?: number
   /** Tell the model about the session's bundle. Default true. */
   readonly promptContext?: boolean
+  /** Give the model the Team Wiki tools `wiki_sync_from_code` and `wiki_open_pr`. Default true. */
+  readonly tools?: boolean
   /** Team Wiki settings. */
   readonly team?: TeamConfigRow
 }
@@ -469,6 +475,12 @@ export function apply(ctx: HostContext, config: Config | null | undefined = {}):
   if (settings.promptContext !== false) {
     ctx.inject(['systemPrompt'], (scope) => {
       scope.systemPrompt.context(sessionContext(library, cache, knowledge))
+    })
+  }
+
+  if (settings.tools !== false) {
+    ctx.inject(['tools'], (scope) => {
+      for (const tool of wikiTools(team)) scope.tools.register(tool)
     })
   }
 }

@@ -141,7 +141,7 @@ const routes = new Map()
 const libraryDir = join(work, 'library')
 host.apply({
   connection: { fetch: { register: (route) => { routes.set(route.path, route); return async () => {} } } },
-  inject: (_deps, callback) => { callback({ systemPrompt: { context: () => () => {} } }) },
+  inject: (_deps, callback) => { callback({ systemPrompt: { context: () => () => {} }, tools: { register: () => () => {} } }) },
 }, { libraryDir, team: { azureApi, python, agentActor: 'dsh/smoke' } })
 
 async function api(path, { method = 'GET', query, body } = {}) {
