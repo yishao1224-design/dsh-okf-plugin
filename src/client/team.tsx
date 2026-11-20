@@ -252,7 +252,7 @@ function WikisTab({ store, state, data, t, onCreate }: { readonly store: OkfStor
  */
 function WikiDetailPane({ store, state, data, wiki, t }: { readonly store: OkfStore, readonly state: OkfState, readonly data: TeamStatus, readonly wiki: ProjectWiki, readonly t: T }): ReactNode {
   const [tab, setTab] = useState<'pulls' | 'pages' | 'review'>('pulls')
-  const [busy, setBusy] = useState<'maintain' | 'preview' | 'publish' | 'initialize' | 'sync' | undefined>(undefined)
+  const [busy, setBusy] = useState<'maintain' | 'preview' | 'publish' | 'sync' | undefined>(undefined)
   const [error, setError] = useState<string | undefined>(undefined)
   const detail = state.team.wikis[wiki.folder]
   useEffect(() => {
@@ -266,19 +266,6 @@ function WikiDetailPane({ store, state, data, wiki, t }: { readonly store: OkfSt
     store.maintainWiki(wiki.folder).then((outcome) => {
       setBusy(undefined)
       if (!outcome.opened) setError(manualText(outcome, t))
-    }, (failure: unknown) => {
-      setBusy(undefined)
-      setError((failure as Error).message)
-    })
-  }
-  const initialize = (): void => {
-    setBusy('initialize')
-    setError(undefined)
-    store.initializeWiki(wiki.folder).then((outcome) => {
-      setBusy(undefined)
-      if (!outcome.opened) setError(manualText(outcome, t))
-      const notice = initText(outcome, t)
-      if (notice !== undefined) store.setNotice(notice)
     }, (failure: unknown) => {
       setBusy(undefined)
       setError((failure as Error).message)
@@ -364,7 +351,6 @@ function WikiDetailPane({ store, state, data, wiki, t }: { readonly store: OkfSt
           <Button variant="primary" disabled={busy !== undefined || wiki.missing === true} title={t('team.maintainHint')} onClick={maintain}>
             {busy === 'maintain' ? t('team.opening') : record === undefined ? t('team.maintain') : t('team.maintainOpen')}
           </Button>
-          <Button disabled={busy !== undefined || wiki.missing === true || wiki.repo === undefined} title={wiki.repo === undefined ? t('team.initNoRepo') : t('team.initHint')} onClick={initialize}>{busy === 'initialize' ? t('team.initializing') : t('team.initialize')}</Button>
           <Button disabled={busy !== undefined || wiki.missing === true || wiki.repo === undefined} title={wiki.repo === undefined ? t('team.initNoRepo') : codeTitle(wiki, t)} onClick={syncCode}>{busy === 'sync' ? t('team.syncing') : t('team.sync')}</Button>
           <Button disabled={busy !== undefined || wiki.missing === true} title={t('team.publishHint')} onClick={publish}>{busy === 'publish' ? t('team.publishing') : t('team.publish')}</Button>
           <Button disabled={busy !== undefined || wiki.missing === true} title={t('team.previewHint')} onClick={preview}>{busy === 'preview' ? t('preview.loading') : t('team.preview')}</Button>

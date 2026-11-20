@@ -910,14 +910,16 @@ export function openTeam(options: TeamOptions): Team {
     return { code: rel, repo: url, commit, prompt }
   }
 
+  /** Maintain, or, for a project still in its setup pull request (not on the base branch yet), its open workspace. */
+  const openRound = (folder: string): Promise<MaintainAnswer> => maintain(folder).catch(async (error: unknown) => {
+    const data = await load()
+    const record = data.maintains.find(item => item.wiki === folder && item.closed === undefined)
+    if (record === undefined) throw error
+    return { record, entry: await options.library.put(entryFor(record)), workspace: record.workspace, created: false }
+  })
+
   const initialize = async (folder: string): Promise<MaintainAnswer> => {
-    const opened = await maintain(folder).catch(async (error: unknown) => {
-      // A project still in its setup pull request is not on the base branch: use its open workspace.
-      const data = await load()
-      const record = data.maintains.find(item => item.wiki === folder && item.closed === undefined)
-      if (record === undefined) throw error
-      return { record, entry: await options.library.put(entryFor(record)), workspace: record.workspace, created: false }
-    })
+    const opened = await openRound(folder)
     const init = await serial(() => checkoutCode(opened.record))
     return { ...opened, initialize: init }
   }
@@ -943,7 +945,7 @@ export function openTeam(options: TeamOptions): Team {
       return head !== undefined && sameCommit(recorded, head) ? head : undefined
     })
     if (early !== undefined) return { upToDate: true, commit: early }
-    const opened = await maintain(folder)
+    const opened = await openRound(folder)
     const answer = await serial(async (): Promise<MaintainAnswer['sync'] & { init?: MaintainAnswer['initialize'] }> => {
       const record = opened.record
       const bundle = join(record.workspace, ...record.wiki.split('/'))
