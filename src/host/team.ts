@@ -9,14 +9,16 @@
  *     <libraryDir>/team/
  *       team.json          the connected repository + maintenance workspaces
  *       main/              a clone of the base branch, read for the page (never edited)
- *       work/<id>/         one clone per maintenance workspace, on its own wiki/… branch
+ *       work/<folder>/     one clone per project wiki, reused for each round on a new wiki/… branch
  *
  * The page lists the project wikis with their review counts (read from
  * `main/`), the open pull requests that touch each one (GitHub REST for the
  * list and checks; git itself for the files and the auto-merge verdict, the
  * same {@link judge} CI runs), and starts two kinds of work:
  *
- * - **Maintain** clones the repository into `work/<id>` on a new branch and
+ * - **Maintain** clones the repository into `work/<folder>` (or, after the
+ *   last round's pull request finished, resets that clone to the latest base)
+ *   on a new branch and
  *   registers the project wiki there as a library entry with `workspace` set,
  *   so the session the browser opens in that DSH Workspace may edit it.
  * - **New project wiki** does the same, then scaffolds the folder with
@@ -602,6 +604,10 @@ export function openTeam(options: TeamOptions): Team {
   const refresh = (): Promise<TeamStatus> => serial(async () => {
     const data = await load()
     await syncMain(data)
+    // Tidy what the older one-folder-per-round layout left behind.
+    for (const folder of new Set(data.maintains.filter(record => record.closed !== undefined).map(record => record.wiki))) {
+      await sweepOld(data, folder, canonical(workspaceDirOf(folder)))
+    }
     pullsCache = undefined
     await save(data)
     return status()
@@ -708,16 +714,31 @@ export function openTeam(options: TeamOptions): Team {
       }
       // A maintenance workspace whose pull request merged or closed is done.
       let changed = false
+      let merged = false
       for (const record of data.maintains) {
         if (record.pr === undefined || record.closed !== undefined || open.some(pull => pull.number === record.pr?.number)) continue
         const state = await github.pullState(record.pr.number).catch(() => 'open' as const)
         if (state === 'open') continue
         Object.assign(record, { closed: state })
         changed = true
+        if (state === 'merged') merged = true
+      }
+      // A merged pull request moved the base branch: bring main/ up to it so
+      // the wiki list shows what merged without a manual refresh.
+      let mainMoved = false
+      if (merged) {
+        const before = data.commit
+        try {
+          await syncMain(data)
+          mainMoved = data.commit !== before
+        } catch (error) {
+          console.warn('[okf] could not update the base branch after a merge:', error)
+        }
       }
       if (changed) await save(data)
-      const answer: PullsAnswer = { pulls: views, at, ...note === undefined ? {} : { note } }
-      pullsCache = { at: Date.now(), answer }
+      const answer: PullsAnswer = { pulls: views, at, ...note === undefined ? {} : { note }, ...changed || mainMoved ? { statusChanged: true } : {} }
+      // Later cached reads have nothing new to report.
+      pullsCache = { at: Date.now(), answer: { pulls: views, at, ...note === undefined ? {} : { note } } }
       return answer
     })
   }
@@ -803,7 +824,52 @@ export function openTeam(options: TeamOptions): Team {
     return { ...opened, initialize: init }
   }
 
-  /** Clone the repository into a fresh maintenance workspace on a new branch. */
+  /** A project wiki's one maintenance folder, reused round after round: `work/<folder>`. */
+  const workspaceDirOf = (folder: string): string => join(workDir, wikiSlug(folder.replaceAll('/', '-')) || 'wiki')
+
+  /**
+   * The project wiki's open workspace, if it still is one: a workspace whose
+   * folder is gone, or whose pull request merged or closed, is marked done.
+   */
+  const openRecordOf = async (data: TeamFile, folder: string): Promise<MaintainRecord | undefined> => {
+    const record = data.maintains.find(item => item.wiki === folder && item.closed === undefined)
+    if (record === undefined) return undefined
+    if (!(await exists(join(record.workspace, '.git')))) {
+      Object.assign(record, { closed: 'closed' })
+      return undefined
+    }
+    const team = needTeam(data)
+    const target = team.provider === 'github' ? parseGitHubRemote(team.url, options.githubHost) : undefined
+    if (record.pr === undefined || target === undefined) return record
+    const state = await new GitHub(options.githubApi, tokenFor(team.provider), target).pullState(record.pr.number).catch(() => 'open' as const)
+    if (state === 'open') return record
+    Object.assign(record, { closed: state })
+    pullsCache = undefined
+    return undefined
+  }
+
+  /**
+   * Remove the folders and library entries the older one-folder-per-round
+   * layout left for a project wiki. A folder with uncommitted changes stays.
+   */
+  const sweepOld = async (data: TeamFile, folder: string, keep: string): Promise<void> => {
+    for (const record of data.maintains) {
+      if (record.wiki !== folder || record.closed === undefined || record.workspace === keep) continue
+      if (record.entryId !== `team-${record.id}`) continue
+      await options.library.remove(record.entryId, false).catch(() => undefined)
+      if (!(await exists(record.workspace))) continue
+      // Only a folder holding nothing that is not on the remote already.
+      const dirty = await git(record.workspace, ['status', '--porcelain']).catch(() => 'unknown')
+      const unpushed = await git(record.workspace, ['log', '--oneline', '--branches', '--not', '--remotes']).catch(() => 'unknown')
+      if (dirty === '' && unpushed === '') await rm(record.workspace, { recursive: true, force: true }).catch(() => undefined)
+    }
+  }
+
+  /**
+   * Start a maintenance round for a project wiki on a new branch from the base
+   * branch, in its one folder: cloned the first time, reset to the latest base
+   * afterwards (anything left uncommitted is stashed, never thrown away).
+   */
   const newWorkspace = async (data: TeamFile, folder: string, name: string, isNew: boolean): Promise<MaintainRecord> => {
     const team = needTeam(data)
     const token = tokenFor(team.provider)
@@ -813,13 +879,38 @@ export function openTeam(options: TeamOptions): Team {
     const id = `${seg}-${stamp()}-${suffix}`
     const branch = isNew ? `wiki/new-${seg}-${suffix}` : `wiki/${seg}-${stamp().replace('-', '')}-${suffix}`
     await mkdir(workDir, { recursive: true })
-    const target = join(workDir, id)
-    try {
-      await git(workDir, ['clone', '--quiet', '--filter=blob:none', '--branch', base, '--', team.url, target], token)
-      await git(target, ['switch', '--quiet', '-c', branch])
-    } catch (error) {
-      await rm(target, { recursive: true, force: true })
-      throw error
+    const target = workspaceDirOf(folder)
+    const busy = data.maintains.find(record => record.closed === undefined && record.workspace === canonical(target))
+    if (busy !== undefined) throw new LibraryError('busy', `${busy.wiki} is still being maintained in ${target}.`, 409)
+    let reused = false
+    if (await exists(join(target, '.git'))) {
+      const url = await git(target, ['config', '--get', 'remote.origin.url']).catch(() => '')
+      if (url === team.url) {
+        try {
+          await git(target, ['fetch', '--quiet', '--prune', 'origin', `+refs/heads/${base}:refs/remotes/origin/${base}`], token)
+          if (await git(target, ['status', '--porcelain']) !== '') {
+            const was = await git(target, ['rev-parse', '--abbrev-ref', 'HEAD']).catch(() => 'HEAD')
+            await git(target, ['stash', 'push', '--quiet', '--include-untracked', '-m', `dsh-okf: left over on ${was}, ${new Date().toISOString()}`])
+          }
+          await git(target, ['switch', '--quiet', '--force', '-C', branch, `origin/${base}`])
+          await git(target, ['clean', '-fdq'])
+          reused = true
+        } catch (error) {
+          throw new LibraryError('reset-failed', `Could not bring ${target} up to ${base}: ${(error as Error).message}`)
+        }
+      } else {
+        // A folder of another hub: set it aside, never delete it.
+        await rename(target, `${target}-old-${stamp()}-${suffix}`)
+      }
+    }
+    if (!reused) {
+      try {
+        await git(workDir, ['clone', '--quiet', '--filter=blob:none', '--branch', base, '--', team.url, target], token)
+        await git(target, ['switch', '--quiet', '-c', branch])
+      } catch (error) {
+        await rm(target, { recursive: true, force: true })
+        throw error
+      }
     }
     const record: MaintainRecord = {
       id,
@@ -827,10 +918,12 @@ export function openTeam(options: TeamOptions): Team {
       wikiName: name,
       branch,
       workspace: canonical(target),
-      entryId: `team-${id}`,
+      // One library entry per project wiki, like its folder.
+      entryId: `team-${wikiSlug(folder.replaceAll('/', '-')) || 'wiki'}`,
       createdAt: new Date().toISOString(),
       ...isNew ? { isNew: true } : {},
     }
+    await sweepOld(data, folder, record.workspace)
     data.maintains.push(record)
     return record
   }
@@ -838,12 +931,11 @@ export function openTeam(options: TeamOptions): Team {
   const maintain = (folder: string): Promise<MaintainAnswer> => serial(async () => {
     const data = await load()
     const team = needTeam(data)
-    const open = data.maintains.find(record => record.wiki === folder && record.closed === undefined)
-    if (open !== undefined && await exists(join(open.workspace, '.git'))) {
+    const open = await openRecordOf(data, folder)
+    if (open !== undefined) {
       const entry = await options.library.put(entryFor(open))
       return { record: open, entry, workspace: open.workspace, created: false }
     }
-    if (open !== undefined) Object.assign(open, { closed: 'closed' })
     const project = (await projectsIn(mainDir, team)).find(candidate => candidate.folder === folder)
     if (project === undefined || !(await exists(join(mainDir, ...folder.split('/'))))) throw new LibraryError('unknown-wiki', `There is no project wiki at ${folder} on the base branch. Refresh, or create it.`, 404)
     const record = await newWorkspace(data, folder, project.name, false)
@@ -864,7 +956,7 @@ export function openTeam(options: TeamOptions): Team {
       const projects = await projectsIn(mainDir, team)
       if (await exists(join(mainDir, folder)) || projects.some(project => project.folder === folder)) throw new LibraryError('exists', `${folder} already exists in the team repository.`, 409)
       if (projects.some(project => project.name.toLowerCase() === name.toLowerCase())) throw new LibraryError('exists', `The registry already has a project named ${name}.`, 409)
-      if (data.maintains.some(record => record.wiki === folder && record.closed === undefined)) throw new LibraryError('exists', `A workspace for ${folder} is already open. Use Maintain on it.`, 409)
+      if (await openRecordOf(data, folder) !== undefined) throw new LibraryError('exists', `A workspace for ${folder} is already open. Use Maintain on it.`, 409)
       const template = request.template ?? 'default'
       let schemaFrom: string | undefined
       if (template.startsWith('copy:')) {
@@ -994,7 +1086,7 @@ export function openTeam(options: TeamOptions): Team {
     const data = await load()
     const team = needTeam(data)
     const record = findRecord(data, id)
-    if (record.closed !== undefined) throw new LibraryError('closed', 'This workspace\'s pull request already merged or closed. Use Maintain to start a fresh one.', 409)
+    if (record.closed !== undefined) throw new LibraryError('closed', 'This round\'s pull request already merged or closed. Press Maintain to start the next round in the same folder.', 409)
     const repo = record.workspace
     const token = tokenFor(team.provider)
     const base = baseOf(data)
@@ -1191,10 +1283,9 @@ export function openTeam(options: TeamOptions): Team {
       const team = needTeam(data)
       const project = (await projectsIn(mainDir, team)).find(candidate => candidate.folder === folder)
       if (project === undefined) throw new LibraryError('unknown-wiki', `There is no project wiki at ${folder}. Refresh, or create it.`, 404)
-      let record = data.maintains.find(item => item.wiki === folder && item.closed === undefined)
+      let record = await openRecordOf(data, folder)
       let created = false
-      if (record === undefined || !(await exists(join(record.workspace, '.git')))) {
-        if (record !== undefined) Object.assign(record, { closed: 'closed' })
+      if (record === undefined) {
         if (!(await exists(join(mainDir, ...folder.split('/'))))) throw new LibraryError('unknown-wiki', `${folder} is registered but not in the repository yet.`, 404)
         record = await newWorkspace(data, folder, project.name, false)
         await save(data)

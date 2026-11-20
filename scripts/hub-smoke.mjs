@@ -97,7 +97,7 @@ const server = createServer((request, response) => {
     const base = `/api/v3/repos/acme/${repoName}`
     const bare = repoName === 'empty' ? emptyOrigin : origin
     const json = body === '' ? {} : JSON.parse(body)
-    const view = pull => ({ number: pull.number, title: pull.title, html_url: `${URL_}/pull/${String(pull.number)}`, draft: false, updated_at: '2026-11-19T08:00:00Z', user: { login: 'dsh-bot' }, head: { ref: pull.head, sha: git(bare, 'rev-parse', `refs/heads/${pull.head}`) }, base: { ref: pull.base }, labels: pull.labels.map(name => ({ name })), state: pull.state, merged: false })
+    const view = pull => ({ number: pull.number, title: pull.title, html_url: `${URL_}/pull/${String(pull.number)}`, draft: false, updated_at: '2026-11-19T08:00:00Z', user: { login: 'dsh-bot' }, head: { ref: pull.head, sha: git(bare, 'rev-parse', `refs/heads/${pull.head}`) }, base: { ref: pull.base }, labels: pull.labels.map(name => ({ name })), state: pull.state, merged: pull.merged === true })
     if (request.method === 'GET' && url.pathname === `${base}/pulls`) {
       const head = url.searchParams.get('head')
       return send(200, pulls.filter(pull => pull.state === 'open' && (head === null || `acme:${pull.head}` === head)).map(view))
@@ -284,6 +284,44 @@ answer: {
 const first = must(await api('/api/okf/team/create', { method: 'POST', body: { name: 'Payments', owner: '@alice' } }), 'create in new hub')
 const firstAgents = readFileSync(join(first.workspace, 'AGENTS.md'), 'utf8')
 check(first.record.wiki === 'payments' && /\|---\|---\|---\|---\|---\|\n\| Payments \| — \| — \| @alice \| `payments\/` \|/.test(firstAgents) && first.pr?.files.includes('payments/index.md'), `first project in the new hub: ${first.prError ?? ''} ${firstAgents.slice(-300)}`)
+
+// Merged on GitHub: the next pull-request check moves main/ and the new wiki leaves "not merged".
+check(first.pr?.pr?.number !== undefined, 'the first project opened a pull request')
+for (const pull of pulls) if (pull.number !== first.pr?.pr?.number) pull.state = 'closed'
+git(emptyOrigin, 'update-ref', 'refs/heads/main', `refs/heads/${first.record.branch}`)
+Object.assign(pulls[(first.pr?.pr?.number ?? 1) - 1], { state: 'closed', merged: true })
+const afterMerge = must(await api('/api/okf/team/pulls', { query: { refresh: '1' } }), 'pulls after merge')
+check(afterMerge.statusChanged === true, `a merge is reported: ${JSON.stringify(afterMerge)}`)
+status = must(await api('/api/okf/team'), 'status after merge')
+check(status.wikis.some(wiki => wiki.folder === 'payments') && !status.maintains.some(record => record.id === first.record.id) && status.commit === git(emptyOrigin, 'rev-parse', 'main'), `the merged wiki is listed: ${JSON.stringify(status)}`)
+const cached = must(await api('/api/okf/team/pulls'), 'cached pulls')
+check(cached.statusChanged === undefined, 'a cached answer does not report the merge again')
+
+// A finished workspace of the older one-folder-per-round layout is tidied on refresh; one with uncommitted work stays.
+{
+  const teamDir = join(first.workspace, '..', '..')
+  const legacy = join(teamDir, 'work', 'payments-20261101-0900-abcd')
+  const dirtyLegacy = join(teamDir, 'work', 'payments-20261102-0900-ef01')
+  for (const dir of [legacy, dirtyLegacy]) git(join(teamDir, 'work'), 'clone', '--quiet', emptyOrigin, dir)
+  writeFileSync(join(dirtyLegacy, 'notes.md'), 'unsaved\n')
+  const teamFile = join(teamDir, 'team.json')
+  const saved = JSON.parse(readFileSync(teamFile, 'utf8'))
+  for (const [id, dir] of [['payments-20261101-0900-abcd', legacy], ['payments-20261102-0900-ef01', dirtyLegacy]]) {
+    saved.maintains.push({ id, wiki: 'payments', wikiName: 'Payments', branch: `wiki/${id}`, workspace: realpathSync(dir), entryId: `team-${id}`, createdAt: '2026-11-01T09:00:00Z', closed: 'merged' })
+  }
+  writeFileSync(teamFile, JSON.stringify(saved, null, 2))
+  must(await api('/api/okf/team/refresh', { method: 'POST', body: {} }), 'refresh sweeps')
+  check(!existsSync(legacy) && existsSync(join(dirtyLegacy, 'notes.md')) && existsSync(first.workspace), 'old finished workspaces are removed, unsaved ones kept')
+}
+
+// The next round reuses the project's one folder, reset to the merged main on a new branch.
+writeFileSync(join(first.workspace, 'payments', 'scratch.md'), 'left over\n')
+const round2 = must(await api('/api/okf/team/maintain', { method: 'POST', body: { folder: 'payments' } }), 'maintain after merge')
+check(round2.created === true && round2.workspace === first.workspace && round2.record.branch !== first.record.branch && round2.entry.id === first.entry.id, `one folder per project: ${round2.workspace} vs ${first.workspace}`)
+check(git(round2.workspace, 'rev-parse', 'HEAD') === git(emptyOrigin, 'rev-parse', 'main') && git(round2.workspace, 'rev-parse', '--abbrev-ref', 'HEAD') === round2.record.branch, 'reset to the latest main on the new branch')
+check(!existsSync(join(round2.workspace, 'payments', 'scratch.md')) && git(round2.workspace, 'stash', 'list').includes('dsh-okf: left over on'), 'leftovers are stashed, not lost')
+const again2 = must(await api('/api/okf/team/maintain', { method: 'POST', body: { folder: 'payments' } }), 'maintain again')
+check(again2.created === false && again2.record.id === round2.record.id, 'an open round is reused')
 
 server.close()
 rmSync(work, { recursive: true, force: true })
