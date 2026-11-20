@@ -1,0 +1,66 @@
+# Auto-complete guard for agent wiki pull requests on Azure DevOps.
+#
+# For a team wiki hub in Azure Repos. Add it as a pipeline (from
+# .github/wiki/workflows/wiki-auto-complete-ado.yml in the hub), then make it
+# a Build validation policy on the base branch (Branch policies → Build
+# validation, Required). The checker comes with the hub at .github/wiki/check-pr.js.
+#
+# The plugin turns auto-complete on (squash, delete the branch) for a pull
+# request it believes touches only unreviewed pages of one project wiki, and
+# tags it `wiki-auto-merge`. This pipeline never trusts that: it re-runs the
+# eligibility check and lint, both taken from the BASE branch (a pull request
+# cannot weaken the rules that judge it).
+#   - Eligible and lint passes: the run succeeds, auto-complete finishes the merge.
+#   - Needs a person: auto-complete is turned off and the run still succeeds,
+#     so a reviewer can complete it by hand.
+#   - Eligible but lint fails: the run fails, which blocks completion.
+#
+# Needs: the project's Build Service account allowed "Contribute to pull
+# requests" on the hub repository (to turn auto-complete off). A "Require a
+# minimum number of reviewers" policy also blocks auto-complete; if you keep
+# one, unreviewed-only changes wait for an approval like any other.
+trigger: none
+
+pool:
+  vmImage: ubuntu-latest
+
+steps:
+  - checkout: self
+    fetchDepth: 0
+    persistCredentials: true
+  - task: UsePythonVersion@0
+    inputs:
+      versionSpec: '3.12'
+  - task: NodeTool@0
+    inputs:
+      versionSpec: '22.x'
+  - bash: |
+      set -u
+      base="${SYSTEM_PULLREQUEST_TARGETBRANCH#refs/heads/}"
+      git fetch --quiet origin "+refs/heads/$base:refs/remotes/origin/$base"
+      git show "origin/$base:.github/wiki/check-pr.js" > "$AGENT_TEMPDIRECTORY/check-pr.mjs"
+      if node "$AGENT_TEMPDIRECTORY/check-pr.mjs" "origin/$base" HEAD; then
+        echo "##vso[task.setvariable variable=eligible;isOutput=true]true"
+      else
+        code=$?
+        [ "$code" -eq 1 ] || exit "$code"
+        echo "##vso[task.setvariable variable=eligible;isOutput=true]false"
+      fi
+    name: check
+    displayName: Only unreviewed pages of one project wiki changed (checker from the base branch)
+  - bash: |
+      base="${SYSTEM_PULLREQUEST_TARGETBRANCH#refs/heads/}"
+      git show "origin/$base:scripts/okf.py" > scripts/okf.py
+      python scripts/okf.py lint --bundle "$(check.wiki)"
+    displayName: Lint that project wiki (okf.py from the base branch)
+    condition: and(succeeded(), eq(variables['check.eligible'], 'true'))
+  - bash: |
+      curl --fail --silent --show-error -X PATCH \
+        -H "Authorization: Bearer $SYSTEM_ACCESSTOKEN" -H 'Content-Type: application/json' \
+        -d '{"autoCompleteSetBy":{"id":"00000000-0000-0000-0000-000000000000"}}' \
+        "${SYSTEM_COLLECTIONURI}${SYSTEM_TEAMPROJECTID}/_apis/git/repositories/${BUILD_REPOSITORY_ID}/pullrequests/${SYSTEM_PULLREQUEST_PULLREQUESTID}?api-version=7.1" > /dev/null
+      echo "Needs a person: auto-complete turned off."
+    displayName: Turn auto-complete off (needs a person)
+    condition: and(succeeded(), eq(variables['check.eligible'], 'false'))
+    env:
+      SYSTEM_ACCESSTOKEN: $(System.AccessToken)

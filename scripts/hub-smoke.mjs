@@ -337,7 +337,7 @@ check(status.empty === true, 'refresh keeps it empty')
 status = must(await api('/api/okf/team/setup', { method: 'POST', body: {} }), 'setup')
 check(status.empty === undefined && /^[0-9a-f]{40}$/.test(status.commit ?? '') && status.wikis.length === 0, `set up: ${JSON.stringify(status)}`)
 const tree = git(emptyOrigin, 'ls-tree', '-r', '--name-only', 'main').split('\n')
-check(['AGENTS.md', 'README.md', 'scripts/okf.py', 'published/Projects/.gitkeep', '.github/wiki/check-pr.js', '.github/wiki/workflows/wiki-auto-merge.yml', '.github/wiki/workflows/wiki-publish-to-ado.yml'].every(path => tree.includes(path)), `hub skeleton: ${tree.join(', ')}`)
+check(['AGENTS.md', 'README.md', 'scripts/okf.py', 'published/Projects/.gitkeep', '.github/wiki/check-pr.js', '.github/wiki/workflows/wiki-auto-merge.yml', '.github/wiki/workflows/wiki-auto-complete-ado.yml', '.github/wiki/workflows/wiki-publish-to-ado.yml'].every(path => tree.includes(path)), `hub skeleton: ${tree.join(', ')}`)
 answer: {
   const again = await api('/api/okf/team/setup', { method: 'POST', body: {} })
   check(again.status === 409 && again.body.error.code === 'not-empty', `a second setup is refused: ${JSON.stringify(again.body)}`)

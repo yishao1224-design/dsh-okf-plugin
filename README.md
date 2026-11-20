@@ -112,7 +112,7 @@ The **Team Wiki** entry in the sidebar (under User stories) opens a page in the 
  └──────────────────────┴────────────────────────────────────────────────────────────────┘
 ```
 
-**The hub repository.** One git repository (GitHub or GitHub Enterprise) holds the knowledge of every project of the team:
+**The hub repository.** One git repository (GitHub, GitHub Enterprise, or Azure Repos) holds the knowledge of every project of the team:
 
 ```text
 team-wiki/
@@ -152,10 +152,12 @@ Connect the hub once on the page (URL, optional base branch, wiki folder), or pr
 
 1. resets any reviewed page that was edited without resetting its stamp to an unreviewed draft (its `verified` history stays);
 2. runs the repository's own `scripts/okf.py` over the wiki: `links`, `index`, `lint` (a failure stops here and nothing is committed), and one `log` line per changed page;
-3. commits **only the wiki's folder**, its `published/Projects/<Project>/` pages, and (for a new project) `AGENTS.md`; other changes are left out and listed. It pushes the branch with the token, and opens or updates the GitHub pull request;
-4. judges the whole branch against the base: it is **auto-merge eligible** only when every changed file is an unreviewed (or new) page, a new capture under `sources/`, `index.md` or `log.md`. Editing a reviewed page, deleting a page, changing `SCHEMA.md` or `archive/`, touching an existing capture, any change under `published/` or to `AGENTS.md`, anything outside the wiki, or a page claiming a human review needs a person. Eligible pull requests get the `wiki-auto-merge` label; the label comes off when that stops being true.
+3. commits **only the wiki's folder**, its `published/Projects/<Project>/` pages, and (for a new project) `AGENTS.md`; other changes are left out and listed. It pushes the branch with the token, and opens or updates the pull request on GitHub or Azure DevOps;
+4. judges the whole branch against the base: it is **auto-merge eligible** only when every changed file is an unreviewed (or new) page, a new capture under `sources/`, `index.md` or `log.md`. Editing a reviewed page, deleting a page, changing `SCHEMA.md` or `archive/`, touching an existing capture, any change under `published/` or to `AGENTS.md`, anything outside the wiki, or a page claiming a human review needs a person. Eligible pull requests get the `wiki-auto-merge` label (a tag on Azure DevOps); the label comes off when that stops being true. On Azure DevOps the Host also turns **auto-complete** on (squash, delete the branch) for an eligible pull request, and off when it stops being eligible.
 
 **CI decides, not the label.** `examples/wiki-auto-merge.yml` is a workflow for the hub repository: it re-runs the same eligibility check with `lib/check-pr.js` and `okf.py lint`, both taken **from the base branch** so a pull request cannot weaken the rules that judge it, and only then turns on GitHub auto-merge. Copy `lib/check-pr.js` to `.github/wiki/check-pr.js` in the hub, enable "Allow auto-merge", and require the job in branch protection. The checker maps each changed file to a project through the registry (on either side of the change), so a pull request must touch exactly one project.
+
+**On Azure DevOps** the same guard is `examples/wiki-auto-complete-ado.yml`, an Azure Pipelines build validation: add it as a pipeline and make it a required Build validation policy on the base branch. It re-runs `check-pr.js` and `okf.py` lint from the base branch; an eligible change whose lint fails fails the run (blocking completion), and a change that needs a person gets auto-complete turned off, so a reviewer completes it by hand. It needs the project's Build Service account allowed "Contribute to pull requests". A "minimum number of reviewers" policy also holds auto-complete back, so unreviewed-only changes then wait for an approval too.
 
 **Initialize from code** (what **Sync from code** does the first time, and a checkbox in New project wiki, on by default when a code repository URL is given) gives a new project wiki its first pages. The Host clones the project's code repository (history without file contents, `--filter=blob:none`, kept between rounds) (the registry's Repo column, with the same token rules as the hub) read-only into `.code/<folder>/` in the project's maintenance workspace, adds `/.code/` to that clone's `.git/info/exclude` so it is never part of a pull request, and writes a read-through task: survey the tree, README, build files and entry points; read the main modules; write an overview, the architecture, one page per main module, the data model, build/run/test, and conventions, all as unreviewed drafts citing `<repo>/blob/<commit>/<path>`; then links, index and lint. The client opens the workspace's session with that task in the message box through `uiWorkspace.startSession(workspace, { prompt })`, so the user reads it and presses send; on a Harness without `startSession` the task goes to the clipboard and the page shows it. The session's rules say `.code/` is read-only. A failed checkout in New project wiki is reported and does not stop the setup.
 
@@ -174,13 +176,13 @@ A published change always needs a person, so the pull request is never auto-merg
 
 **Publishing to the Azure DevOps wiki.** `examples/wiki-publish-to-ado.yml` runs when a merge to `main` changes `published/Projects/**`. It clones the existing ADO wiki repository (`vars.ADO_WIKI_REPO`, branch `vars.ADO_WIKI_BRANCH`, default `wikiMaster`) with `secrets.ADO_WIKI_PAT`, mirrors `published/Projects/` into its `Projects/` folder, and pushes. It refuses to commit if anything outside `Projects/` changed, so hand-written wiki pages are never touched. Since every change under `published/` needs a person, nothing reaches the ADO wiki without a review.
 
-**The pull request list** reads open pull requests from GitHub (title, author, labels, checks), fetches their branches into the clone, and computes the files and the verdict from git with the same rule. A pull request appears under every project wiki it touches; one that touches no wiki is not listed.
+**The pull request list** reads open pull requests from GitHub or Azure DevOps (title, author, labels, checks; on Azure DevOps the pull request statuses that build validations post), fetches their branches into the clone (`refs/pull/<n>/head` on GitHub, the source branch on Azure DevOps), and computes the files and the verdict from git with the same rule. A pull request appears under every project wiki it touches; one that touches no wiki is not listed.
 
 **New project wiki** takes a name, a folder, the code repository URL, an owner, a one-line summary and a starting `SCHEMA.md` (copied from an existing wiki, or `okf.py`'s default). It adds the project's row to the `AGENTS.md` registry (creating the section, and listing the bundles already there, when the hub has none yet). It makes a workspace on `wiki/new-<folder>-<hex>`, runs `okf.py init` and `index` for the new folder (and drops what `init` touched outside it), writes `wiki_name: <name>` into `SCHEMA.md`, opens the setup as the first pull request (a new `SCHEMA.md` and the registry change always need a person), and opens a session in the workspace. The wiki joins the list once that pull request merges.
 
 **Preview** adds the wiki as it is on the base branch to the library (read-only) and opens it in the OKF dialog; any session can then attach it from the OKF chip. **Local library** lists every bundle on this machine: fetched, local folders, previews and maintenance workspaces (the same list the OKF chip attaches from).
 
-**Tokens.** Pushing and opening pull requests use `DSH_OKF_GITHUB_TOKEN` (or `DSH_OKF_GIT_TOKEN`), as a git `http.extraHeader` through `GIT_CONFIG_*` and as a `Bearer` header to the REST API, never in argv, a URL or a config file. Without a token the branch is still pushed when git's own credentials allow it, and the page says the pull request could not be opened. For **GitHub Enterprise** set `team.githubHost` (for example `github.acme.com`); the API defaults to `https://<host>/api/v3`. An Azure DevOps hub works for Maintain, New project wiki and pushing, but its pull requests are not listed or opened.
+**Tokens.** Pushing and opening pull requests use `DSH_OKF_GITHUB_TOKEN` (or `DSH_OKF_GIT_TOKEN`), as a git `http.extraHeader` through `GIT_CONFIG_*` and as a `Bearer` header to the REST API, never in argv, a URL or a config file. Without a token the branch is still pushed when git's own credentials allow it, and the page says the pull request could not be opened. For **GitHub Enterprise** set `team.githubHost` (for example `github.acme.com`); the API defaults to `https://<host>/api/v3`. For an **Azure DevOps** hub (`https://dev.azure.com/{org}/{project}/_git/{repo}`, `{org}.visualstudio.com`, or `ssh.dev.azure.com`) set `DSH_OKF_AZURE_TOKEN` to a personal access token with **Code: Read & Write**; it goes to git and to the REST API as Basic auth. Mark reviewed then records the token's account (usually your email) as `human:<account>`.
 
 **Still to do in knowledgeAgent** (the plugin only reads and writes the layout above): `kb-ingest` finding the bundle through the hub's registry and opening its pull request against the hub, and the hub's own `AGENTS.md` rules.
 
@@ -213,6 +215,7 @@ Optional settings go under the row in `cordis.patch.yml`. A patch replaces the w
 | `team.python` | `python` on Windows, else `python3` | Runs the repository's `scripts/okf.py` |
 | `team.okfScript` | `scripts/okf.py` | The toolchain, relative to the repository |
 | `team.githubHost` / `team.githubApi` | `github.com` / `https://api.github.com` (`https://<host>/api/v3` for another host) | For GitHub Enterprise |
+| `team.azureApi` | `https://dev.azure.com` | Azure DevOps REST root, without the organization |
 | `team.autoMergeLabel` | `wiki-auto-merge` | Label on eligible pull requests; `''` sets none |
 | `team.agentActor` | `dsh/agent` | `generated.by` the maintenance rules ask for |
 | `team.commitAuthor` | `DSH Wiki <dsh-wiki@users.noreply.github.com>` | Committer when git has no identity |
@@ -246,6 +249,7 @@ dsh-okf-plugin/
 │   │   ├── review.ts     # reviewed/unreviewed from frontmatter; the agent-edit stamp
 │   │   ├── eligibility.ts# the auto-merge rule (shared with lib/check-pr.js)
 │   │   ├── github.ts     # the few GitHub REST calls
+│   │   ├── azure.ts      # the same calls for Azure DevOps (pull requests, tags, statuses, auto-complete)
 │   │   └── run.ts        # git / python child processes with the token header
 │   ├── check-pr.ts       # CI checker -> lib/check-pr.js
 │   ├── types/
@@ -262,6 +266,7 @@ dsh-okf-plugin/
 └── scripts/
     ├── smoke.mjs         # both halves end to end, no Harness needed
     ├── team-smoke.mjs    # the Team Wiki end to end against a bare repo + a fake GitHub API
+    ├── ado-smoke.mjs     # the same against a fake Azure DevOps API
     ├── harness-check.mjs # against DSH's real SystemPrompt + ToolRuntime (needs a checkout)
     └── preview-server.mjs# a dev page that mounts the built UI against the real Host routes
 ```
@@ -292,6 +297,8 @@ npm run smoke      # smoke.mjs, team-smoke.mjs, hub-smoke.mjs
 
 **`scripts/hub-smoke.mjs`** covers the hub layout on a GitHub Enterprise host (`github.acme.com`, API under `/api/v3`): the registry drives the project list (summary, owner, repo link, a registered but missing folder, publish status), a new page is eligible, a change under `published/Projects/Payments/` goes in the same pull request and needs a person while another project's published page is left out, New project wiki adds a registry row (with `|` escaped) in the same pull request, a registered name is refused, Publish (into the same pull request, the landing page and folder pages, review lines, rewritten links, a stale published page removed, another project's left alone, an unchanged bundle proposing nothing), and `lib/check-pr.js` maps every case through the registry.
 
+**`scripts/ado-smoke.mjs`** runs the pull request side against a fake Azure DevOps API, with the hub under `https://dev.azure.com/acme/Wiki/_git/team-wiki`: connect, Maintain, an eligible pull request (tagged, auto-complete on with squash), the PR list fetched from the source branch with statuses read (latest per context), a reviewed page edited (tag and auto-complete off, title kept), Mark reviewed with the PAT's account as reviewer, and a completed pull request that closes the workspace and moves the base branch clone. Every call is checked for the PAT and `api-version=7.1`.
+
 **`scripts/harness-check.mjs`** applies the built Host module next to DSH's real `SystemPrompt` and `ToolRuntime`, provided by sibling plugins as in the Harness. It checks that the module applies under strict injection, that `assemble({ agent })` carries the bundle for the right session only, and that no `okf_*` tool reaches the real registry. It also checks that disposal removes everything.
 
 ```sh
@@ -310,6 +317,6 @@ DSH_ROOT=D:/project/dsh node --import file:///D:/project/dsh/node_modules/tsx/di
 
 - **Not loaded in a running Harness yet.** The Host routes and prompt context were checked against DSH 0.2.1-alpha.1 source: the smoke test, the harness check, and the preview page. The plugin has not been installed with `plugin_manager`, and the agent has not answered from a bundle in a real session.
 - **The button's placement in the real Harness is unconfirmed.** DSH does not render `conversation.session.header.utilities` in a blank session (the "hero" phase), so the first install showed no button there; the composer copy (`conversation.input.right`) was added for that reason. The composer row also needs a session id: in a "New session" view that has not created its session yet, neither button can appear.
-- **Azure DevOps was not tested against a live organization.** URL parsing is covered by tests, and the token header follows Azure DevOps' documented Basic-PAT scheme, but no real ADO clone was run. GitHub was tested live with `yishao1224-design/knowledgeAgent`.
+- **Azure DevOps was not tested against a live organization.** URL parsing and the pull request side are covered by `ado-smoke.mjs` against a stand-in API written from Microsoft's REST reference (Git Pull Requests 7.1: create/update, labels, statuses, `autoCompleteSetBy`, `connectionData`), and the token header follows the documented Basic-PAT scheme, but no real ADO clone, pull request or pipeline (`wiki-auto-complete-ado.yml`) was run. GitHub was tested live with `yishao1224-design/knowledgeAgent`.
 - **File access to the bundle folder is unconfirmed.** The agent now reads pages with DSH's own `read` / `grep` / `glob`. DSH's `read` resolves paths without a workspace fence in 0.2.1-alpha.1 source, but a session's sandbox or permission profile may still block or prompt for reads under `~/.dsh/okf/`. Check this in a real session.
 - **The vendored contract** (`src/types/contract.ts`) was read from DSH 0.2.1-alpha.1. If a Harness upgrade moves one of these shapes, that file is the one to update.

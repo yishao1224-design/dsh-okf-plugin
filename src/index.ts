@@ -74,6 +74,8 @@ export interface TeamConfigRow {
   readonly githubHost?: string
   /** GitHub REST base URL. Default `https://api.github.com`, or `https://<githubHost>/api/v3` for an Enterprise host. */
   readonly githubApi?: string
+  /** Azure DevOps REST root, without the organization. Default `https://dev.azure.com`. */
+  readonly azureApi?: string
   /** Label set on pull requests eligible for auto-merge; `''` sets none. Default `wiki-auto-merge`. */
   readonly autoMergeLabel?: string
   /** `generated.by` written when a reviewed page is reset. Default `dsh/agent`. */
@@ -430,12 +432,14 @@ export function apply(ctx: HostContext, config: Config | null | undefined = {}):
       files: {
         '.github/wiki/check-pr.js': fileURLToPath(new URL('./check-pr.js', import.meta.url)),
         '.github/wiki/workflows/wiki-auto-merge.yml': fileURLToPath(new URL('../examples/wiki-auto-merge.yml', import.meta.url)),
+        '.github/wiki/workflows/wiki-auto-complete-ado.yml': fileURLToPath(new URL('../examples/wiki-auto-complete-ado.yml', import.meta.url)),
         '.github/wiki/workflows/wiki-publish-to-ado.yml': fileURLToPath(new URL('../examples/wiki-publish-to-ado.yml', import.meta.url)),
       },
     },
     githubHost: teamRow.githubHost ?? 'github.com',
     // GitHub Enterprise Server serves its REST API under /api/v3 on its own host.
     githubApi: teamRow.githubApi ?? ((teamRow.githubHost ?? 'github.com') === 'github.com' ? 'https://api.github.com' : `https://${teamRow.githubHost ?? ''}/api/v3`),
+    ...teamRow.azureApi === undefined ? {} : { azureApi: teamRow.azureApi },
     autoMergeLabel: teamRow.autoMergeLabel ?? 'wiki-auto-merge',
     agentActor: teamRow.agentActor ?? 'dsh/agent',
     commitAuthor: teamRow.commitAuthor ?? 'DSH Wiki <dsh-wiki@users.noreply.github.com>',

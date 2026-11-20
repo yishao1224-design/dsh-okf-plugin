@@ -13,6 +13,7 @@
     "lib/client.js",
     "lib/check-pr.js",
     "examples/wiki-auto-merge.yml",
+    "examples/wiki-auto-complete-ado.yml",
     "examples/wiki-publish-to-ado.yml",
     "templates/hub",
     "cordis.patch.yml",
@@ -21,7 +22,7 @@
   "scripts": {
     "build": "node build.mjs",
     "typecheck": "tsc --noEmit",
-    "smoke": "node scripts/smoke.mjs && node scripts/team-smoke.mjs && node scripts/hub-smoke.mjs"
+    "smoke": "node scripts/smoke.mjs && node scripts/team-smoke.mjs && node scripts/hub-smoke.mjs && node scripts/ado-smoke.mjs"
   },
   "dsh": {
     "bundle": {

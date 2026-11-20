@@ -108,6 +108,7 @@ export function TeamWikiPage({ store, t }: TeamWikiPageProps): ReactNode {
         </div>
       )}
       {!data.hasToken && data.team.provider === 'github' && <div style={{ ...st('note'), margin: '8px 22px 0' }}>{t('team.noToken')}</div>}
+      {!data.hasToken && data.team.provider === 'azure-devops' && <div style={{ ...st('note'), margin: '8px 22px 0' }}>{t('team.noTokenAzure')}</div>}
       {tab === 'wikis'
         ? <WikisTab store={store} state={state} data={data} t={t} onCreate={() => { setCreating(true) }} />
         : <BundlesTab store={store} entries={state.library.entries} t={t} />}
@@ -594,7 +595,6 @@ function PullList({ store, state, pulls, folder, t }: { readonly store: OkfStore
         <Button disabled={answer.status === 'loading'} onClick={() => { void store.loadPulls(true) }}>{answer.status === 'loading' ? t('team.refreshing') : t('team.refreshPulls')}</Button>
       </div>
       {answer.status === 'failed' && <div style={st('error')}>{answer.error}</div>}
-      {note === 'azure' && <div style={st('note')}>{t('team.pullsAzure')}</div>}
       {note === 'not-github' && <div style={st('note')}>{t('team.pullsNotGithub')}</div>}
       {note?.startsWith('fetch-failed') === true && <div style={st('note')}>{t('team.pullsFetchFailed')}</div>}
       {error !== undefined && <div style={st('error')}>{error}</div>}
@@ -615,7 +615,7 @@ function PullList({ store, state, pulls, folder, t }: { readonly store: OkfStore
           </div>
           <div style={st('row')}>
             {pull.maintainId !== undefined && <Button disabled={opening} onClick={openSession}>{opening ? t('team.opening') : t('team.openSession')}</Button>}
-            <a style={{ ...st('button'), textDecoration: 'none' }} href={pull.url} target="_blank" rel="noreferrer">{t('team.reviewOnGithub')}</a>
+            <a style={{ ...st('button'), textDecoration: 'none' }} href={pull.url} target="_blank" rel="noreferrer">{t('team.reviewOnHost')}</a>
           </div>
         </div>
       ))}
