@@ -708,16 +708,31 @@ export function openTeam(options: TeamOptions): Team {
       }
       // A maintenance workspace whose pull request merged or closed is done.
       let changed = false
+      let merged = false
       for (const record of data.maintains) {
         if (record.pr === undefined || record.closed !== undefined || open.some(pull => pull.number === record.pr?.number)) continue
         const state = await github.pullState(record.pr.number).catch(() => 'open' as const)
         if (state === 'open') continue
         Object.assign(record, { closed: state })
         changed = true
+        if (state === 'merged') merged = true
+      }
+      // A merged pull request moved the base branch: bring main/ up to it so
+      // the wiki list shows what merged without a manual refresh.
+      let mainMoved = false
+      if (merged) {
+        const before = data.commit
+        try {
+          await syncMain(data)
+          mainMoved = data.commit !== before
+        } catch (error) {
+          console.warn('[okf] could not update the base branch after a merge:', error)
+        }
       }
       if (changed) await save(data)
-      const answer: PullsAnswer = { pulls: views, at, ...note === undefined ? {} : { note } }
-      pullsCache = { at: Date.now(), answer }
+      const answer: PullsAnswer = { pulls: views, at, ...note === undefined ? {} : { note }, ...changed || mainMoved ? { statusChanged: true } : {} }
+      // Later cached reads have nothing new to report.
+      pullsCache = { at: Date.now(), answer: { pulls: views, at, ...note === undefined ? {} : { note } } }
       return answer
     })
   }

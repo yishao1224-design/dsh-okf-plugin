@@ -17,6 +17,9 @@ import type { OkfKey } from './locales.ts'
 import type { OkfState, OkfStore, OpenOutcome } from './store.ts'
 import { st, sx } from './styles.ts'
 
+/** How often an open workspace pull request is checked for a merge. */
+const PR_POLL_MS = 3 * 60_000
+
 type T = Translate<OkfKey>
 
 /**
@@ -53,6 +56,20 @@ export function TeamWikiPage({ store, t }: TeamWikiPageProps): ReactNode {
   useEffect(() => {
     if (data?.team !== undefined && team.pulls.status === 'idle') void store.loadPulls()
   }, [store, data?.team, team.pulls.status])
+  // While a workspace's pull request is open, notice when it merges: on coming
+  // back to the window (e.g. from merging on GitHub) and every few minutes.
+  const waiting = data?.maintains.some(record => record.pr !== undefined) === true
+  useEffect(() => {
+    if (!waiting) return
+    const check = (): void => { if (store.getSnapshot().team.pulls.status !== 'loading') void store.loadPulls() }
+    const onFocus = (): void => { check() }
+    window.addEventListener('focus', onFocus)
+    const timer = window.setInterval(check, PR_POLL_MS)
+    return () => {
+      window.removeEventListener('focus', onFocus)
+      window.clearInterval(timer)
+    }
+  }, [store, waiting])
 
   if (data === undefined) {
     return (

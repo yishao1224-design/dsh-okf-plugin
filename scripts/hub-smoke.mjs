@@ -97,7 +97,7 @@ const server = createServer((request, response) => {
     const base = `/api/v3/repos/acme/${repoName}`
     const bare = repoName === 'empty' ? emptyOrigin : origin
     const json = body === '' ? {} : JSON.parse(body)
-    const view = pull => ({ number: pull.number, title: pull.title, html_url: `${URL_}/pull/${String(pull.number)}`, draft: false, updated_at: '2026-11-19T08:00:00Z', user: { login: 'dsh-bot' }, head: { ref: pull.head, sha: git(bare, 'rev-parse', `refs/heads/${pull.head}`) }, base: { ref: pull.base }, labels: pull.labels.map(name => ({ name })), state: pull.state, merged: false })
+    const view = pull => ({ number: pull.number, title: pull.title, html_url: `${URL_}/pull/${String(pull.number)}`, draft: false, updated_at: '2026-11-19T08:00:00Z', user: { login: 'dsh-bot' }, head: { ref: pull.head, sha: git(bare, 'rev-parse', `refs/heads/${pull.head}`) }, base: { ref: pull.base }, labels: pull.labels.map(name => ({ name })), state: pull.state, merged: pull.merged === true })
     if (request.method === 'GET' && url.pathname === `${base}/pulls`) {
       const head = url.searchParams.get('head')
       return send(200, pulls.filter(pull => pull.state === 'open' && (head === null || `acme:${pull.head}` === head)).map(view))
@@ -284,6 +284,18 @@ answer: {
 const first = must(await api('/api/okf/team/create', { method: 'POST', body: { name: 'Payments', owner: '@alice' } }), 'create in new hub')
 const firstAgents = readFileSync(join(first.workspace, 'AGENTS.md'), 'utf8')
 check(first.record.wiki === 'payments' && /\|---\|---\|---\|---\|---\|\n\| Payments \| — \| — \| @alice \| `payments\/` \|/.test(firstAgents) && first.pr?.files.includes('payments/index.md'), `first project in the new hub: ${first.prError ?? ''} ${firstAgents.slice(-300)}`)
+
+// Merged on GitHub: the next pull-request check moves main/ and the new wiki leaves "not merged".
+check(first.pr?.pr?.number !== undefined, 'the first project opened a pull request')
+for (const pull of pulls) if (pull.number !== first.pr?.pr?.number) pull.state = 'closed'
+git(emptyOrigin, 'update-ref', 'refs/heads/main', `refs/heads/${first.record.branch}`)
+Object.assign(pulls[(first.pr?.pr?.number ?? 1) - 1], { state: 'closed', merged: true })
+const afterMerge = must(await api('/api/okf/team/pulls', { query: { refresh: '1' } }), 'pulls after merge')
+check(afterMerge.statusChanged === true, `a merge is reported: ${JSON.stringify(afterMerge)}`)
+status = must(await api('/api/okf/team'), 'status after merge')
+check(status.wikis.some(wiki => wiki.folder === 'payments') && !status.maintains.some(record => record.id === first.record.id) && status.commit === git(emptyOrigin, 'rev-parse', 'main'), `the merged wiki is listed: ${JSON.stringify(status)}`)
+const cached = must(await api('/api/okf/team/pulls'), 'cached pulls')
+check(cached.statusChanged === undefined, 'a cached answer does not report the merge again')
 
 server.close()
 rmSync(work, { recursive: true, force: true })

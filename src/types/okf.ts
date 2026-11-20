@@ -313,6 +313,11 @@ export interface PullsAnswer {
   readonly at: string
   /** Why the list is empty or partial, e.g. not a GitHub remote. */
   readonly note?: string
+  /**
+   * A workspace's pull request merged or closed (and on a merge `main/` moved
+   * to the new base commit): the team status is out of date.
+   */
+  readonly statusChanged?: true
 }
 
 /** A changed file in a maintenance workspace. */

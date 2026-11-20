@@ -327,6 +327,11 @@ export function createOkfStore(fetcher: Fetcher = (input, init) => globalThis.fe
     try {
       const data = await call<PullsAnswer>(fetcher, ROUTES.teamPulls, { ...force ? { query: { refresh: '1' } } : {}, timeoutMs: GIT_TIMEOUT_MS })
       setTeam({ pulls: { status: 'ready', data } })
+      // A pull request merged: the wiki list and pages moved with the base branch.
+      if (data.statusChanged === true) {
+        setTeam({ wikis: {} })
+        await loadTeam()
+      }
     } catch (error) {
       setTeam({ pulls: failed(state.team.pulls, error) })
     }
