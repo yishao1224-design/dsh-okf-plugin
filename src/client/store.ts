@@ -8,7 +8,7 @@
  */
 import { relative, ROUTES } from '../types/okf.ts'
 import type {
-  BundleSummary, ChangesAnswer, EditWorkspaceAnswer, FetchRequest, LibraryEntry, MaintainAnswer, OpenPrAnswer, PageContent, PublishAnswer,
+  BundleSummary, ChangesAnswer, EditWorkspaceAnswer, FetchRequest, LibraryEntry, MaintainAnswer, OpenPrAnswer, PageContent, PublishAnswer, SyncAnswer,
   PullsAnswer, SessionSelection, TeamStatus, WikiDetail,
 } from '../types/okf.ts'
 import type { LayoutService, UiWorkspaceService, WorkspacesService } from '../types/contract.ts'
@@ -222,6 +222,8 @@ export interface OkfStore {
   createWiki(request: { name: string, folder?: string, template?: string, repo?: string, owner?: string, summary?: string, initialize?: boolean }): Promise<OpenOutcome>
   /** Check out the project's code in its workspace and open a session with the read-through task prefilled. */
   initializeWiki(folder: string): Promise<OpenOutcome>
+  /** Sync from code: diff the code since the wiki's recorded commit and open a session with the update task prefilled. */
+  syncWiki(folder: string): Promise<OpenOutcome | { readonly upToDate: true, readonly commit: string }>
   /** Open (or make) the project wiki's maintenance workspace and a session there. */
   maintainWiki(folder: string): Promise<OpenOutcome>
   /** kb-publish: render the wiki into published/Projects/ and open its pull request. */
@@ -472,6 +474,11 @@ export function createOkfStore(fetcher: Fetcher = (input, init) => globalThis.fe
     },
     async initializeWiki(folder) {
       const answer = await call<MaintainAnswer>(fetcher, ROUTES.teamInitialize, { method: 'POST', body: { folder }, timeoutMs: GIT_TIMEOUT_MS * 2 })
+      return afterMaintain(answer)
+    },
+    async syncWiki(folder) {
+      const answer = await call<SyncAnswer>(fetcher, ROUTES.teamSync, { method: 'POST', body: { folder }, timeoutMs: GIT_TIMEOUT_MS * 2 })
+      if ('upToDate' in answer) return answer
       return afterMaintain(answer)
     },
     async maintainWiki(folder) {
