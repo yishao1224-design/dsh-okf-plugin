@@ -86,8 +86,9 @@ export class GitHub {
    * @param signal - cancellation.
    * @returns the parsed answer.
    */
-  async call(method: string, path: string, body: unknown, signal: AbortSignal | undefined): Promise<unknown> {
-    const response = await fetch(`${this.api}/repos/${encodeURIComponent(this.target.owner)}/${encodeURIComponent(this.target.repo)}${path}`, {
+  async call(method: string, path: string, body: unknown, signal: AbortSignal | undefined, outsideRepo = false): Promise<unknown> {
+    const url = outsideRepo ? `${this.api}${path}` : `${this.api}/repos/${encodeURIComponent(this.target.owner)}/${encodeURIComponent(this.target.repo)}${path}`
+    const response = await fetch(url, {
       method,
       headers: {
         accept: 'application/vnd.github+json',
@@ -107,6 +108,17 @@ export class GitHub {
       throw new GitHubError(response.status, `${message}${errors}`)
     }
     return value
+  }
+
+  /**
+   * The login of the token's user.
+   * @param signal - cancellation.
+   * @returns the login.
+   */
+  async login(signal?: AbortSignal): Promise<string> {
+    const row = await this.call('GET', '/user', undefined, signal, true) as { login?: string }
+    if (typeof row.login !== 'string' || row.login === '') throw new GitHubError(500, 'GitHub did not say who the token belongs to.')
+    return row.login
   }
 
   /**

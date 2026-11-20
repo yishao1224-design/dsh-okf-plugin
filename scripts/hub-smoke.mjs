@@ -99,6 +99,7 @@ const server = createServer((request, response) => {
     const bare = repoName === 'empty' ? emptyOrigin : origin
     const json = body === '' ? {} : JSON.parse(body)
     const view = pull => ({ number: pull.number, title: pull.title, html_url: `${URL_}/pull/${String(pull.number)}`, draft: false, updated_at: '2026-11-19T08:00:00Z', user: { login: 'dsh-bot' }, head: { ref: pull.head, sha: git(bare, 'rev-parse', `refs/heads/${pull.head}`) }, base: { ref: pull.base }, labels: pull.labels.map(name => ({ name })), state: pull.state, merged: pull.merged === true })
+    if (request.method === 'GET' && url.pathname === '/api/v3/user') return send(200, { login: 'alice-gh' })
     if (request.method === 'GET' && url.pathname === `${base}/pulls`) {
       const head = url.searchParams.get('head')
       return send(200, pulls.filter(pull => pull.state === 'open' && (head === null || `acme:${pull.head}` === head)).map(view))
@@ -274,6 +275,19 @@ check(synced.record?.id === record.id && synced.sync?.from === codeBefore && syn
 const syncTask = synced.initialize?.prompt ?? ''
 check(syncTask.includes('- concepts/overview.md: src/main.ts') && syncTask.includes('- modified: src/main.ts') && syncTask.includes('- added: src/refund.ts') && syncTask.includes('Pay an amount; add refunds') && syncTask.includes(`blob/${codeAfter}/<path>`), `sync task: ${syncTask}`)
 check(readFileSync(join(ws, 'payments', 'SCHEMA.md'), 'utf8').includes(`code_commit: ${codeAfter}`) && existsSync(join(ws, '.code', 'payments', 'src', 'refund.ts')), 'the workspace records the new commit and has the new code')
+
+// ── Mark reviewed: stamps the person behind the token and needs a person to merge ──
+answer: {
+  const bad = await api('/api/okf/team/review', { method: 'POST', body: { folder: 'payments', paths: ['../AGENTS.md'] } })
+  check(bad.status === 400 || bad.status === 422, `a path outside the wiki is refused: ${JSON.stringify(bad.body)}`)
+}
+const reviewed = must(await api('/api/okf/team/review', { method: 'POST', body: { folder: 'payments', paths: ['concepts/overview.md', 'concepts/missing.md'] } }), 'mark reviewed')
+const overviewText = readFileSync(join(ws, 'payments', 'concepts', 'overview.md'), 'utf8')
+check(reviewed.reviewer === 'alice-gh' && reviewed.marked.length === 1 && reviewed.skipped.length === 1 && reviewed.record.id === record.id, `review: ${JSON.stringify({ ...reviewed, entry: undefined })}`)
+check(/verified:\n {2}- by: human:alice-gh\n {4}at: \d{4}-\d{2}-\d{2}/.test(overviewText) && overviewText.includes('lifecycle: active') && overviewText.includes('status: stable') && /stale_after: \d{4}-\d{2}-\d{2}/.test(overviewText), `marked page: ${overviewText}`)
+check(reviewed.pr?.pr !== undefined && reviewed.pr.eligible === false && !reviewed.pr.stamped.includes('concepts/overview.md'), `the review PR needs a person and is not reset: ${JSON.stringify(reviewed.pr ?? reviewed.prError)}`)
+const preview = must(await api('/api/okf/team/attach', { method: 'POST', body: { folder: 'payments' } }), 'attach payments')
+check(preview.entry.id === 'team-main-payments' && preview.entry.teamWiki === 'payments' && preview.entry.id !== record.entryId, `preview entry stays apart from the workspace entry: ${JSON.stringify(preview.entry)}`)
 
 // ── New project wiki: a bundle at the root plus a registry row, one PR ──
 const created = must(await api('/api/okf/team/create', { method: 'POST', body: { name: 'Settlement', template: 'copy:payments', repo: 'https://github.acme.com/pay/settlement', owner: '@carol', summary: 'Daily settlement | batches', initialize: true } }), 'create')

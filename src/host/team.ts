@@ -50,10 +50,10 @@ import { GitHub, parseGitHubRemote } from './github.ts'
 import { canonical, cleanRepoPath, LibraryError, TOKEN_ENV } from './library.ts'
 import type { Library } from './library.ts'
 import { affectedPages, citedCommit, frontmatterOf, parseNameStatus as parseCodeChanges, sameCommit, schemaCommit, setSchemaCommit, syncPrompt } from './codesync.ts'
-import { describeReview, joinPage, reviewState, setKeys, splitPage, stampAgentEdit, today } from './review.ts'
+import { describeReview, markReviewed, joinPage, reviewState, setKeys, splitPage, stampAgentEdit, today } from './review.ts'
 import { run, RunError } from './run.ts'
 import type {
-  ChangedPage, ChangesAnswer, GitProvider, LibraryEntry, MaintainAnswer, MaintainRecord, OpenPrAnswer, ProjectWiki, PublishAnswer, SyncAnswer,
+  ChangedPage, ChangesAnswer, GitProvider, LibraryEntry, MaintainAnswer, MaintainRecord, OpenPrAnswer, ProjectWiki, PublishAnswer, ReviewAnswer, SyncAnswer,
   PullsAnswer, PullView, TeamConfig, TeamStatus, WikiDetail, WikiPage, WikiStats,
 } from '../types/okf.ts'
 
@@ -119,6 +119,8 @@ export interface Team {
   initialize(folder: string): Promise<MaintainAnswer>
   /** Bring the project's code up to date in its workspace and write the task to update the pages its changes affect. */
   sync(folder: string): Promise<SyncAnswer>
+  /** Mark pages reviewed by the person behind the token, in the project's round, and open or update its pull request. */
+  review(folder: string, paths: readonly string[]): Promise<ReviewAnswer>
   /**
    * A read-only library entry for a project wiki on the base branch (the
    * `main/` checkout), so any session can attach it from the OKF chip.
@@ -159,6 +161,8 @@ const NON_BUNDLE_DIRS = new Set(['.git', '.github', '.claude', '.agents', '.curs
 const PULLS_TTL_MS = 60_000
 /** Pages read per wiki, at most. */
 const PAGE_CAP = 5000
+/** How long a review holds before the page is due for another look. */
+const REVIEW_VALID_DAYS = 182
 
 /**
  * Whether a path is a file.
@@ -971,6 +975,69 @@ export function openTeam(options: TeamOptions): Team {
     return { ...opened, sync: info, ...init === undefined ? {} : { initialize: init } }
   }
 
+  let reviewerCache: { key: string, id: string } | undefined
+  /** Who is reviewing: the GitHub login behind the token, else git's user.name. */
+  const reviewerId = async (data: TeamFile): Promise<string> => {
+    const team = needTeam(data)
+    const token = tokenFor(team.provider)
+    const target = team.provider === 'github' ? parseGitHubRemote(team.url, options.githubHost) : undefined
+    const key = `${team.url}|${token ?? ''}`
+    if (reviewerCache?.key === key) return reviewerCache.id
+    let id: string | undefined
+    if (target !== undefined && token !== undefined) id = await new GitHub(options.githubApi, token, target).login().catch(() => undefined)
+    id ??= (await git(mainDir, ['config', 'user.name']).catch(() => '')).trim().replace(/\s+/g, '-') || undefined
+    if (id === undefined) throw new LibraryError('no-reviewer', 'Could not tell who is reviewing: set a GitHub token (or git user.name).', 409)
+    reviewerCache = { key, id }
+    return id
+  }
+
+  const review = async (folder: string, paths: readonly string[]): Promise<ReviewAnswer> => {
+    const wanted = [...new Set(paths.map(path => path.trim()).filter(path => path !== ''))]
+    if (wanted.length === 0) throw new LibraryError('no-pages', 'Pick at least one page to mark reviewed.')
+    if (wanted.length > 500) throw new LibraryError('too-many', 'Mark at most 500 pages at once.')
+    for (const path of wanted) {
+      if (path.startsWith('/') || path.split('/').includes('..') || !path.endsWith('.md') || !countsAsPage(path)) throw new LibraryError('bad-path', `${path} is not a page of the project wiki.`)
+    }
+    const opened = await openRound(folder)
+    const reviewer = await reviewerId(await load())
+    const date = today()
+    const due = new Date(Date.now() + REVIEW_VALID_DAYS * 86_400_000)
+    const staleAfter = `${String(due.getFullYear())}-${String(due.getMonth() + 1).padStart(2, '0')}-${String(due.getDate()).padStart(2, '0')}`
+    const marked: string[] = []
+    const skipped: string[] = []
+    await serial(async () => {
+      const bundle = join(opened.record.workspace, ...folder.split('/'))
+      for (const path of wanted) {
+        const file = join(bundle, ...path.split('/'))
+        const before = await readFile(file, 'utf8').catch(() => undefined)
+        if (before === undefined) {
+          skipped.push(`${path} (not in the workspace)`)
+          continue
+        }
+        try {
+          await writeFile(file, markReviewed(before, reviewer, date, staleAfter))
+          marked.push(path)
+        } catch (error) {
+          skipped.push(`${path} (${(error as Error).message})`)
+        }
+      }
+    })
+    const base = { record: opened.record, entry: opened.entry, workspace: opened.workspace, reviewer, marked, skipped }
+    if (marked.length === 0) return base
+    // A round with its own pull request keeps its title; a new one says what it is.
+    const fresh = opened.record.pr === undefined
+    const request = fresh
+      ? { title: `Review ${String(marked.length)} ${marked.length === 1 ? 'page' : 'pages'} of the ${opened.record.wikiName} wiki`, summary: [`${reviewer} read and marked these pages reviewed (stale after ${staleAfter}):`, '', ...marked.map(path => `- \`${path}\``)].join('\n') }
+      : {}
+    try {
+      const pr = await openPr(opened.record.id, request)
+      const record = (await load()).maintains.find(item => item.id === opened.record.id) ?? opened.record
+      return { ...base, record, pr }
+    } catch (error) {
+      return { ...base, prError: (error as Error).message }
+    }
+  }
+
   /** A project wiki's one maintenance folder, reused round after round: `work/<folder>`. */
   const workspaceDirOf = (folder: string): string => join(workDir, wikiSlug(folder.replaceAll('/', '-')) || 'wiki')
 
@@ -1369,8 +1436,10 @@ export function openTeam(options: TeamOptions): Team {
     const data = await load()
     needTeam(data)
     return options.library.put({
-      id: `team-${wikiSlug(folder) || 'wiki'}`,
+      // Not `team-<folder>`: that is the project's maintenance entry.
+      id: `team-main-${wikiSlug(folder.replaceAll('/', '-')) || 'wiki'}`,
       name: detail.wiki.name,
+      teamWiki: folder,
       root: join(canonical(mainDir), ...folder.split('/')),
       origin: { kind: 'local' },
       addedAt: data.team?.connectedAt ?? new Date().toISOString(),
@@ -1485,7 +1554,7 @@ export function openTeam(options: TeamOptions): Team {
     }
   }
 
-  return { status, connect, refresh, wiki, pulls, create, maintain: openRound, changes, openPr, attach, publish, setupHub, initialize, sync }
+  return { status, connect, refresh, wiki, pulls, create, maintain: openRound, changes, openPr, attach, publish, setupHub, initialize, sync, review }
 }
 
 /**

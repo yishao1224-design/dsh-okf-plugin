@@ -52,6 +52,8 @@ export interface LibraryEntry {
   readonly workspace?: string
   /** Set on an entry the Team Wiki page made for a maintenance workspace. */
   readonly team?: { readonly maintainId: string, readonly wiki: string, readonly project?: string }
+  /** A Team Wiki project on the base branch (read-only), by its folder: its pages can be marked reviewed. */
+  readonly teamWiki?: string
 }
 
 /** One page of a bundle as the catalog lists it. */
@@ -172,6 +174,7 @@ export const ROUTES = {
   teamSetup: `${API_BASE}/team/setup`,
   teamInitialize: `${API_BASE}/team/initialize`,
   teamSync: `${API_BASE}/team/sync`,
+  teamReview: `${API_BASE}/team/review`,
   teamChanges: `${API_BASE}/team/changes`,
   teamOpenPr: `${API_BASE}/team/open-pr`,
   teamAttach: `${API_BASE}/team/attach`,
@@ -366,6 +369,20 @@ export interface MaintainAnswer {
    */
   readonly sync?: { readonly from?: string, readonly to: string, readonly files: number, readonly pages: number, readonly upToDate?: true, readonly fallback?: true }
   /** New project wiki opens its first pull request right away; this says how that went. */
+  readonly pr?: OpenPrAnswer
+  readonly prError?: string
+}
+
+/** What Mark reviewed did. */
+export interface ReviewAnswer {
+  readonly record: MaintainRecord
+  readonly entry: LibraryEntry
+  readonly workspace: string
+  /** Recorded as `human:<reviewer>`. */
+  readonly reviewer: string
+  /** Bundle-relative paths now marked reviewed. */
+  readonly marked: readonly string[]
+  readonly skipped: readonly string[]
   readonly pr?: OpenPrAnswer
   readonly prError?: string
 }

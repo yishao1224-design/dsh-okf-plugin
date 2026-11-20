@@ -253,3 +253,34 @@ export function stampAgentEdit(source: string, agent: string, date: string): str
   if (keyLines(page.block, 'created') === undefined) values.created = [`created: ${date}`]
   return joinPage({ ...page, block: setKeys(page.block, values) })
 }
+
+/**
+ * Mark a page reviewed by a person: append `{ by: human:<id>, at: <date> }` to
+ * `verified` (earlier entries stay, they are history) and set
+ * `lifecycle: active`, `status: stable`, `stale_after` and `updated`.
+ * @param source - the page.
+ * @param reviewer - the person's id, without `human:`.
+ * @param date - today, `YYYY-MM-DD`.
+ * @param staleAfter - when the page is due for another look.
+ * @returns the marked page.
+ * @throws {Error} when the page has no frontmatter.
+ */
+export function markReviewed(source: string, reviewer: string, date: string, staleAfter: string): string {
+  const page = splitPage(source)
+  if (page === undefined) throw new Error('The page has no YAML frontmatter.')
+  const entry = { by: `human:${reviewer}`, at: date }
+  const before = keyLines(page.block, 'verified')
+  // Rewrite as a block list, keeping every earlier entry.
+  const earlier = before === undefined ? [] : verifiedEntries(before).filter(item => item.by !== undefined || item.at !== undefined)
+  const verified = ['verified:', ...[...earlier, entry].flatMap(item => [`  - by: ${item.by ?? '?'}`, ...item.at === undefined ? [] : [`    at: ${item.at}`]])]
+  return joinPage({
+    ...page,
+    block: setKeys(page.block, {
+      status: ['status: stable'],
+      lifecycle: ['lifecycle: active'],
+      updated: [`updated: ${date}`],
+      stale_after: [`stale_after: ${staleAfter}`],
+      verified,
+    }),
+  })
+}

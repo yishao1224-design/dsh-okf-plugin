@@ -167,7 +167,7 @@ check((await api('/api/okf/team/wiki', { query: { folder: 'okf/nope' } })).statu
 
 // Preview: a read-only library entry on the base branch.
 answer = must(await api('/api/okf/team/attach', { method: 'POST', body: { folder: 'okf/payments' } }), 'attach')
-check(answer.entry.id === 'team-okf-payments' && answer.entry.workspace === undefined && answer.entry.root === join(libraryDir, 'team', 'main', 'okf', 'payments'), `attach: ${JSON.stringify(answer.entry)}`)
+check(answer.entry.id === 'team-main-okf-payments' && answer.entry.teamWiki === 'okf/payments' && answer.entry.workspace === undefined && answer.entry.root === join(libraryDir, 'team', 'main', 'okf', 'payments'), `attach: ${JSON.stringify(answer.entry)}`)
 
 // ── Maintain ──
 const maintained = must(await api('/api/okf/team/maintain', { method: 'POST', body: { folder: 'okf/payments' } }), 'maintain')
