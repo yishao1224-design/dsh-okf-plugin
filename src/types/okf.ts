@@ -327,6 +327,8 @@ export interface ChangesAnswer {
   readonly record: MaintainRecord
   readonly files: readonly ChangedPage[]
   readonly uncommitted: number
+  /** A title and summary built from the changed pages, for the dialog to prefill. */
+  readonly suggested?: { readonly title: string, readonly summary: string }
 }
 
 /** The answer of Maintain and New project wiki: open this workspace with this entry. */

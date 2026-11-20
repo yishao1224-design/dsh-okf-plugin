@@ -778,7 +778,16 @@ function OpenPrBody({ store, state, maintainId, t }: { readonly store: OkfStore,
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | undefined>(undefined)
   const [result, setResult] = useState<OpenPrAnswer | undefined>(undefined)
+  const [prefilled, setPrefilled] = useState(false)
   useEffect(() => { void store.loadChanges(maintainId) }, [store, maintainId])
+  // Prefill once from what changed; the user edits from there.
+  const suggested = changes?.data?.suggested
+  useEffect(() => {
+    if (prefilled || suggested === undefined) return
+    setPrefilled(true)
+    setSummary(current => (current.trim() === '' ? suggested.summary : current))
+    if (record?.pr === undefined) setTitle(current => (current.trim() === '' ? suggested.title : current))
+  }, [prefilled, suggested, record?.pr])
   const close = (): void => { if (!busy) store.openPrDialog(undefined) }
   const submit = (): void => {
     setBusy(true)
@@ -821,7 +830,7 @@ function OpenPrBody({ store, state, maintainId, t }: { readonly store: OkfStore,
           <label style={st('label')} htmlFor="okf-pr-title">{t('team.prTitle')}</label>
           <input id="okf-pr-title" style={st('input')} value={title} placeholder={record?.pr === undefined ? t('team.prTitleDefault', { name: record?.wikiName ?? '' }) : t('team.prTitleKeep')} onChange={(event) => { setTitle(event.target.value) }} />
           <label style={st('label')} htmlFor="okf-pr-summary">{t('team.prSummary')}</label>
-          <textarea id="okf-pr-summary" style={sx('input', 'twTextarea')} value={summary} onChange={(event) => { setSummary(event.target.value) }} />
+          <textarea id="okf-pr-summary" style={{ ...sx('input', 'twTextarea'), minHeight: 160 }} value={summary} onChange={(event) => { setSummary(event.target.value) }} />
           <p style={st('note')}>{t('team.prExplain')}</p>
           {error !== undefined && <div style={st('error')}>{error}</div>}
           {result !== undefined && <PrResult result={result} t={t} />}
