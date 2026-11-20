@@ -11,7 +11,10 @@
  * - `packages/client/ui-conversation/src/client/contract/slots.ts` — `conversation.session.header.utilities`.
  * - `packages/client/ui-layout/src/client/index.ts` — `main` (keyed), `shell.overlay`, `layout.selectPanel`.
  * - `packages/client/ui-sidebar/src/client/contract/slots.ts` — `sidebar.panellist`.
- * - `packages/api/workspace-controller/src/client/service.ts` — `workspaces` (`create`, `list`).
+ * - `packages/api/workspace-controller/src/client/service.ts` — `workspaces` (`create`, `list`, `rename`).
+ *   A Workspace's sidebar row has a fixed folder icon and shows its `title`
+ *   (`packages/client/ui-workspace/src/client/rows/Rows.tsx`), which defaults to
+ *   the folder name and must be non-empty and unique (`workspace/name-conflict`).
  * - `packages/client/ui-workspace/src/client/navigation.ts` — `uiWorkspace` (`connectWorkspace`, `openSession`).
  *
  * When a DSH upgrade moves one of these shapes, update only this file.
@@ -151,6 +154,8 @@ export interface WorkspaceView {
 export interface WorkspacesService {
   /** Register an existing folder as a Workspace; idempotent for a known folder. */
   create(input: { path: string }): Promise<WorkspaceView>
+  /** Set a Workspace's title. Absent on older Harness builds. */
+  rename?(workspaceId: string, title: string): Promise<unknown>
   /** Host-authoritative Workspace rows. */
   readonly list: {
     getSnapshot(): { readonly items: readonly WorkspaceView[] }
