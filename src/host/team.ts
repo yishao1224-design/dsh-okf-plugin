@@ -47,6 +47,8 @@ import type { SummaryFile } from './summary.ts'
 import { adoName, publishedDir, publishedProject, renderBundle, webUrl } from './publish.ts'
 import type { BundleFile } from './publish.ts'
 import { GitHub, parseGitHubRemote } from './github.ts'
+import type { ChecksState, PullRequest, PullSummary } from './github.ts'
+import { AzureDevOps } from './azure.ts'
 import { canonical, cleanRepoPath, LibraryError, TOKEN_ENV } from './library.ts'
 import type { Library } from './library.ts'
 import { affectedPages, citedCommit, frontmatterOf, parseNameStatus as parseCodeChanges, sameCommit, schemaCommit, setSchemaCommit, syncPrompt } from './codesync.ts'
@@ -56,6 +58,30 @@ import type {
   ChangedPage, ChangesAnswer, GitProvider, LibraryEntry, MaintainAnswer, MaintainRecord, OpenPrAnswer, ProjectWiki, PublishAnswer, ReviewAnswer, SyncAnswer,
   PullsAnswer, PullView, TeamConfig, TeamStatus, WikiDetail, WikiPage, WikiStats,
 } from '../types/okf.ts'
+
+/**
+ * The pull request side of the hub's host, GitHub or Azure DevOps, behind
+ * one shape so the page treats both alike.
+ */
+interface PullHost {
+  /** For notes: `GitHub` or `Azure DevOps`. */
+  readonly name: string
+  /** The environment variable a token for it is read from. */
+  readonly tokenEnv: string
+  readonly login: (signal?: AbortSignal) => Promise<string>
+  readonly openOrUpdate: (input: { title: string, body: string, head: string, base: string }) => Promise<PullRequest>
+  readonly setLabel: (number: number, label: string, present: boolean) => Promise<void>
+  readonly openPulls: () => Promise<PullSummary[]>
+  readonly pullState: (number: number) => Promise<'open' | 'merged' | 'closed'>
+  readonly checks: (pull: PullSummary) => Promise<ChecksState>
+  /** The remote ref holding a pull request's head, for `git fetch`. */
+  readonly headRef: (pull: PullSummary) => string
+  /**
+   * Turn the host's own auto-merge on or off, where the plugin drives it
+   * (Azure DevOps auto-complete; on GitHub the workflow does it).
+   */
+  readonly setAutoMerge?: (number: number, on: boolean) => Promise<void>
+}
 
 /** Team Wiki settings from the plugin row. */
 export interface TeamOptions {
@@ -73,6 +99,8 @@ export interface TeamOptions {
   readonly hubTemplate?: { readonly dir: string, readonly files: Readonly<Record<string, string>> }
   readonly githubHost: string
   readonly githubApi: string
+  /** Azure DevOps REST root (organization-less). Default `https://dev.azure.com`. */
+  readonly azureApi?: string
   /** Label set on eligible pull requests; `''` sets none. */
   readonly autoMergeLabel: string
   /** `generated.by` written when a reviewed page is reset. */
@@ -443,6 +471,55 @@ export function openTeam(options: TeamOptions): Team {
 
   const tokenFor = (provider: GitProvider): string | undefined => TOKEN_ENV[provider].map(name => env[name]?.trim()).find(value => value !== undefined && value !== '')
 
+  /**
+   * The pull request API of the hub's host.
+   * @param team - the connected hub.
+   * @returns GitHub or Azure DevOps, or undefined for another git host.
+   */
+  const pullHost = (team: TeamConfig): PullHost | undefined => {
+    const token = tokenFor(team.provider)
+    const hub = team.provider === 'github' ? parseGitHubRemote(team.url, options.githubHost) : undefined
+    if (hub !== undefined) {
+      const github = new GitHub(options.githubApi, token, hub)
+      return {
+        name: 'GitHub',
+        tokenEnv: TOKEN_ENV.github[0] ?? 'DSH_OKF_GITHUB_TOKEN',
+        login: signal => github.login(signal),
+        openOrUpdate: input => github.openOrUpdate(input),
+        setLabel: (number, label, present) => github.setLabel(number, label, present),
+        openPulls: () => github.openPulls(),
+        pullState: number => github.pullState(number),
+        checks: pull => github.checks(pull.headSha),
+        headRef: pull => `refs/pull/${String(pull.number)}/head`,
+      }
+    }
+    if (team.provider !== 'azure-devops') return undefined
+    let remote: ReturnType<typeof parseRemote>
+    try {
+      remote = parseRemote(team.url)
+    } catch {
+      return undefined
+    }
+    if (remote.owner === undefined || remote.project === undefined) return undefined
+    const api = (options.azureApi ?? 'https://dev.azure.com').replace(/\/$/, '')
+    const target = { org: remote.owner, project: remote.project, repo: remote.repo }
+    const web = `${api}/${[target.org, target.project, '_git', target.repo].map(part => part === '_git' ? part : encodeURIComponent(part)).join('/')}`
+    const azure = new AzureDevOps(api, token, target, web)
+    return {
+      name: 'Azure DevOps',
+      tokenEnv: TOKEN_ENV['azure-devops'][0] ?? 'DSH_OKF_AZURE_TOKEN',
+      login: signal => azure.login(signal),
+      openOrUpdate: input => azure.openOrUpdate(input),
+      setLabel: (number, label, present) => azure.setLabel(number, label, present),
+      openPulls: () => azure.openPulls(),
+      pullState: number => azure.pullState(number),
+      checks: pull => azure.checks(pull),
+      // Azure Repos has no pull/<n>/head ref: the source branch is the head.
+      headRef: pull => `refs/heads/${pull.headRef}`,
+      setAutoMerge: (number, on) => azure.setAutoMerge(number, on),
+    }
+  }
+
   const git = (cwd: string, args: string[], token?: string): Promise<string> => run(options.git, args, { cwd, timeoutMs: options.timeoutMs, ...token === undefined ? {} : { token } })
 
   const needTeam = (data: TeamFile): TeamConfig => {
@@ -743,18 +820,15 @@ export function openTeam(options: TeamOptions): Team {
       const data = await load()
       const team = needTeam(data)
       const at = new Date().toISOString()
-      const target = team.provider === 'github' ? parseGitHubRemote(team.url, options.githubHost) : undefined
-      if (target === undefined) {
-        return { pulls: [], at, note: team.provider === 'azure-devops' ? 'azure' : 'not-github' }
-      }
+      const host = pullHost(team)
+      if (host === undefined) return { pulls: [], at, note: 'not-github' }
       const token = tokenFor(team.provider)
-      const github = new GitHub(options.githubApi, token, target)
       const base = baseOf(data)
-      const open = (await github.openPulls()).filter(pull => pull.baseRef === base)
+      const open = (await host.openPulls()).filter(pull => pull.baseRef === base)
       const projects = await projectsIn(mainDir, team)
       let note: string | undefined
       try {
-        await git(mainDir, ['fetch', '--quiet', 'origin', `+refs/heads/${base}:refs/remotes/origin/${base}`, ...open.map(pull => `+refs/pull/${String(pull.number)}/head:refs/okf-pr/${String(pull.number)}`)], token)
+        await git(mainDir, ['fetch', '--quiet', 'origin', `+refs/heads/${base}:refs/remotes/origin/${base}`, ...open.map(pull => `+${host.headRef(pull)}:refs/okf-pr/${String(pull.number)}`)], token)
       } catch (error) {
         note = `fetch-failed: ${(error as Error).message}`
       }
@@ -783,7 +857,7 @@ export function openTeam(options: TeamOptions): Team {
           eligible = verdict.eligible
           reasons = verdict.reasons
         }
-        const checks = await github.checks(pull.headSha).catch(() => 'unknown' as const)
+        const checks = await host.checks(pull).catch(() => 'unknown' as const)
         views.push({
           number: pull.number,
           title: pull.title,
@@ -806,7 +880,7 @@ export function openTeam(options: TeamOptions): Team {
       let merged = false
       for (const record of data.maintains) {
         if (record.pr === undefined || record.closed !== undefined || open.some(pull => pull.number === record.pr?.number)) continue
-        const state = await github.pullState(record.pr.number).catch(() => 'open' as const)
+        const state = await host.pullState(record.pr.number).catch(() => 'open' as const)
         if (state === 'open') continue
         Object.assign(record, { closed: state })
         changed = true
@@ -976,17 +1050,17 @@ export function openTeam(options: TeamOptions): Team {
   }
 
   let reviewerCache: { key: string, id: string } | undefined
-  /** Who is reviewing: the GitHub login behind the token, else git's user.name. */
+  /** Who is reviewing: the GitHub login (or Azure DevOps account) behind the token, else git's user.name. */
   const reviewerId = async (data: TeamFile): Promise<string> => {
     const team = needTeam(data)
     const token = tokenFor(team.provider)
-    const target = team.provider === 'github' ? parseGitHubRemote(team.url, options.githubHost) : undefined
+    const host = pullHost(team)
     const key = `${team.url}|${token ?? ''}`
     if (reviewerCache?.key === key) return reviewerCache.id
     let id: string | undefined
-    if (target !== undefined && token !== undefined) id = await new GitHub(options.githubApi, token, target).login().catch(() => undefined)
+    if (host !== undefined && token !== undefined) id = await host.login().catch(() => undefined)
     id ??= (await git(mainDir, ['config', 'user.name']).catch(() => '')).trim().replace(/\s+/g, '-') || undefined
-    if (id === undefined) throw new LibraryError('no-reviewer', 'Could not tell who is reviewing: set a GitHub token (or git user.name).', 409)
+    if (id === undefined) throw new LibraryError('no-reviewer', 'Could not tell who is reviewing: set a GitHub or Azure DevOps token (or git user.name).', 409)
     reviewerCache = { key, id }
     return id
   }
@@ -1053,9 +1127,9 @@ export function openTeam(options: TeamOptions): Team {
       return undefined
     }
     const team = needTeam(data)
-    const target = team.provider === 'github' ? parseGitHubRemote(team.url, options.githubHost) : undefined
-    if (record.pr === undefined || target === undefined) return record
-    const state = await new GitHub(options.githubApi, tokenFor(team.provider), target).pullState(record.pr.number).catch(() => 'open' as const)
+    const host = pullHost(team)
+    if (record.pr === undefined || host === undefined) return record
+    const state = await host.pullState(record.pr.number).catch(() => 'open' as const)
     if (state === 'open') return record
     Object.assign(record, { closed: state })
     pullsCache = undefined
@@ -1404,24 +1478,30 @@ export function openTeam(options: TeamOptions): Team {
     // 4 · Push and open the pull request.
     let pr: OpenPrAnswer['pr']
     await git(repo, ['push', '--quiet', '-u', 'origin', `HEAD:refs/heads/${record.branch}`], token)
-    const target = team.provider === 'github' ? parseGitHubRemote(team.url, options.githubHost) : undefined
-    if (target === undefined) {
-      notes.push(`The branch ${record.branch} is pushed. Pull requests are opened automatically on GitHub only; open this one in your Git host.`)
+    const host = pullHost(team)
+    if (host === undefined) {
+      notes.push(`The branch ${record.branch} is pushed. Pull requests are opened automatically on GitHub and Azure DevOps only; open this one in your Git host.`)
     } else if (token === undefined) {
-      notes.push(`The branch ${record.branch} is pushed, but DSH_OKF_GITHUB_TOKEN is not set, so the pull request was not opened. Set it and press Open pull request again.`)
+      notes.push(`The branch ${record.branch} is pushed, but ${host.tokenEnv} is not set, so the pull request was not opened. Set it and press Open pull request again.`)
     } else {
-      const github = new GitHub(options.githubApi, token, target)
       const body = prBody(summary, verdict.pages.map(page => ({
         path: page.path,
         status: page.status,
         before: page.before === undefined ? 'new' : describeReview(page.before),
         after: page.after === undefined ? 'deleted' : describeReview(page.after),
       })), eligible, reasons, lint, [...stamped.map(path => `Reset to an unreviewed draft because it was edited: ${path}`), ...notes], record.id)
-      const opened = await github.openOrUpdate({ title, body, head: record.branch, base })
+      const opened = await host.openOrUpdate({ title, body, head: record.branch, base })
       pr = opened
       if (options.autoMergeLabel !== '') {
-        await github.setLabel(opened.number, options.autoMergeLabel, eligible).catch((error: unknown) => {
+        await host.setLabel(opened.number, options.autoMergeLabel, eligible).catch((error: unknown) => {
           notes.push(`Could not ${eligible ? 'add' : 'remove'} the ${options.autoMergeLabel} label: ${(error as Error).message}`)
+        })
+      }
+      // Azure DevOps: auto-complete merges once the branch policies pass (a
+      // build validation re-runs the checker); a change that needs a person has it off.
+      if (host.setAutoMerge !== undefined) {
+        await host.setAutoMerge(opened.number, eligible).catch((error: unknown) => {
+          notes.push(`Could not turn auto-complete ${eligible ? 'on' : 'off'}: ${(error as Error).message}`)
         })
       }
       Object.assign(record, { pr: { number: opened.number, url: opened.url } })

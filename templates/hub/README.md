@@ -20,6 +20,10 @@ no `workflow` token permission. To turn them on, move them to `.github/workflows
 - `wiki-auto-merge.yml` re-checks each pull request with `.github/wiki/check-pr.js`
   and lets eligible ones (only unreviewed pages) merge themselves. Enable
   "Allow auto-merge" in the repository settings and require the job in branch protection.
+- `wiki-auto-complete-ado.yml` is the same guard for a hub in **Azure Repos**: add it
+  as a pipeline and make it a required Build validation policy on the base branch.
+  The plugin turns auto-complete on for eligible pull requests; this pipeline
+  re-checks them and turns auto-complete off for any that need a person.
 - `wiki-publish-to-ado.yml` syncs `published/Projects/` into the Azure DevOps wiki's
   `Projects/` section after a merge. Set `vars.ADO_WIKI_REPO`, optionally
   `vars.ADO_WIKI_BRANCH`, and `secrets.ADO_WIKI_PAT` first.

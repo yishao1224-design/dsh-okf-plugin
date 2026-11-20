@@ -109,6 +109,8 @@ try {
   const wikis = [...new Set(files.map(file => wikiOf(file.path)).filter((wiki): wiki is string => wiki !== undefined))]
   const wiki = wikis.length === 1 ? wikis[0] ?? '' : ''
   if (process.env.GITHUB_OUTPUT !== undefined && process.env.GITHUB_OUTPUT !== '') appendFileSync(process.env.GITHUB_OUTPUT, `wiki=${wiki}\n`)
+  // Azure Pipelines: an output variable the next steps read as $(check.wiki).
+  if (process.env.TF_BUILD === 'True') console.log(`##vso[task.setvariable variable=wiki;isOutput=true]${wiki}`)
 
   const verdict = judge(wiki, files)
   if (wikis.length === 0) verdict.reasons.push(`touches no project wiki under ${root || 'the repository root'}`)
