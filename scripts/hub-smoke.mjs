@@ -232,13 +232,41 @@ check(init.record.id === record.id && init.initialize?.code === '.code/payments'
 check(existsSync(join(ws, '.code', 'payments', 'src', 'main.ts')) && /^\/\.code\/$/m.test(readFileSync(join(ws, '.git', 'info', 'exclude'), 'utf8')) && !git(ws, 'status', '--porcelain').includes('.code'), 'the code is checked out and ignored')
 const prompt = init.initialize?.prompt ?? ''
 check(prompt.includes('`.code/payments/`') && prompt.includes('`payments/`') && prompt.includes('lifecycle: draft') && prompt.includes('generated: { by: dsh/smoke') && prompt.includes(`https://github.acme.com/pay/payments-service/blob/${init.initialize?.commit ?? ''}/<path>`) && prompt.includes('Never edit anything under `.code/`'), `prompt: ${prompt}`)
-writeFileSync(join(ws, 'payments', 'concepts', 'overview.md'), readFileSync(join(ws, 'payments', 'concepts', 'refunds.md'), 'utf8').replace(/Refunds/g, 'Overview'))
+check(readFileSync(join(ws, 'payments', 'SCHEMA.md'), 'utf8').includes(`code_commit: ${init.initialize?.commit ?? '?'}`), 'Initialize records the code commit in SCHEMA.md')
+writeFileSync(join(ws, 'payments', 'concepts', 'overview.md'), [
+  '---', 'type: Concept', 'title: Overview', 'description: What payments-service does.', 'status: draft', 'lifecycle: draft', 'updated: 2026-11-20',
+  'sources:', `  - id: main`, `    resource: https://github.acme.com/pay/payments-service/blob/${init.initialize?.commit ?? ''}/src/main.ts`, '---', '', '# Overview', '', 'It pays.', '',
+].join('\n'))
 pr = must(await api('/api/okf/team/open-pr', { method: 'POST', body: { id: record.id } }), 'open-pr after initialize')
 check(!pr.files.some(path => path.startsWith('.code/')) && !pr.notes.some(note => note.includes('.code')), `the checkout stays out of the pull request: ${pr.files.join(', ')} | ${pr.notes.join(' | ')}`)
 answer: {
   const noRepo = await api('/api/okf/team/initialize', { method: 'POST', body: { folder: 'ledger' } })
   check(noRepo.status !== 200, `a project without a code repository is refused: ${JSON.stringify(noRepo.body)}`)
 }
+
+// ── Sync from code: Refresh notices new code commits; Sync diffs them and names the pages that cite them ──
+const codeBefore = init.initialize?.commit ?? ''
+git(origin, 'update-ref', 'refs/heads/main', `refs/heads/${record.branch}`)
+status = must(await api('/api/okf/team/refresh', { method: 'POST', body: {} }), 'refresh with code check')
+let paymentsCode = status.wikis.find(wiki => wiki.folder === 'payments')?.code
+check(paymentsCode?.recorded === codeBefore && paymentsCode.head === codeBefore && paymentsCode.behind === undefined, `code in step: ${JSON.stringify(paymentsCode)}`)
+const upToDate = must(await api('/api/okf/team/sync', { method: 'POST', body: { folder: 'payments' } }), 'sync up to date')
+check(upToDate.upToDate === true && upToDate.commit === codeBefore, `nothing new to sync: ${JSON.stringify(upToDate)}`)
+writeFileSync(join(codeSeed, 'src', 'main.ts'), 'export function pay(amount: number): void {}\n')
+writeFileSync(join(codeSeed, 'src', 'refund.ts'), 'export function refund(): void {}\n')
+git(codeSeed, 'add', '-A')
+git(codeSeed, 'commit', '-qm', 'Pay an amount; add refunds')
+git(codeSeed, 'push', '-q', codeOrigin, 'HEAD:main')
+const codeAfter = git(codeSeed, 'rev-parse', 'HEAD')
+status = must(await api('/api/okf/team/refresh', { method: 'POST', body: {} }), 'refresh after a code commit')
+paymentsCode = status.wikis.find(wiki => wiki.folder === 'payments')?.code
+check(paymentsCode?.behind === true && paymentsCode.head === codeAfter && paymentsCode.recorded === codeBefore, `code updated: ${JSON.stringify(paymentsCode)}`)
+check(status.wikis.find(wiki => wiki.folder === 'ledger')?.code === undefined, 'a project without a repository has no code state')
+const synced = must(await api('/api/okf/team/sync', { method: 'POST', body: { folder: 'payments' } }), 'sync')
+check(synced.record?.id === record.id && synced.sync?.from === codeBefore && synced.sync.to === codeAfter && synced.sync.files === 2 && synced.sync.pages === 1, `sync: ${JSON.stringify(synced.sync)}`)
+const syncTask = synced.initialize?.prompt ?? ''
+check(syncTask.includes('- concepts/overview.md: src/main.ts') && syncTask.includes('- modified: src/main.ts') && syncTask.includes('- added: src/refund.ts') && syncTask.includes('Pay an amount; add refunds') && syncTask.includes(`blob/${codeAfter}/<path>`), `sync task: ${syncTask}`)
+check(readFileSync(join(ws, 'payments', 'SCHEMA.md'), 'utf8').includes(`code_commit: ${codeAfter}`) && existsSync(join(ws, '.code', 'payments', 'src', 'refund.ts')), 'the workspace records the new commit and has the new code')
 
 // ── New project wiki: a bundle at the root plus a registry row, one PR ──
 const created = must(await api('/api/okf/team/create', { method: 'POST', body: { name: 'Settlement', template: 'copy:payments', repo: 'https://github.acme.com/pay/settlement', owner: '@carol', summary: 'Daily settlement | batches', initialize: true } }), 'create')

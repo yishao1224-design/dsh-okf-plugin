@@ -217,6 +217,7 @@ function WikisTab({ store, state, data, t, onCreate }: { readonly store: OkfStor
               <div style={st('twCardName')}>
                 <span>{wiki.name}</span>
                 {wiki.maintainId !== undefined && <span style={sx('badge', 'badgeBrand')}>{t('team.beingMaintained')}</span>}
+                {wiki.code?.behind === true && <span style={sx('badge', 'badgeWarn')} title={codeTitle(wiki, t)}>{t('team.codeUpdated')}</span>}
               </div>
               <div style={st('twMono')}>{wiki.folder}/{wiki.owner === undefined ? '' : ` · ${wiki.owner}`}</div>
               {wiki.summary !== undefined && <div style={{ ...st('twMeta'), overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={wiki.summary}>{wiki.summary}</div>}
@@ -251,7 +252,7 @@ function WikisTab({ store, state, data, t, onCreate }: { readonly store: OkfStor
  */
 function WikiDetailPane({ store, state, data, wiki, t }: { readonly store: OkfStore, readonly state: OkfState, readonly data: TeamStatus, readonly wiki: ProjectWiki, readonly t: T }): ReactNode {
   const [tab, setTab] = useState<'pulls' | 'pages' | 'review'>('pulls')
-  const [busy, setBusy] = useState<'maintain' | 'preview' | 'publish' | 'initialize' | undefined>(undefined)
+  const [busy, setBusy] = useState<'maintain' | 'preview' | 'publish' | 'initialize' | 'sync' | undefined>(undefined)
   const [error, setError] = useState<string | undefined>(undefined)
   const detail = state.team.wikis[wiki.folder]
   useEffect(() => {
@@ -278,6 +279,28 @@ function WikiDetailPane({ store, state, data, wiki, t }: { readonly store: OkfSt
       if (!outcome.opened) setError(manualText(outcome, t))
       const notice = initText(outcome, t)
       if (notice !== undefined) store.setNotice(notice)
+    }, (failure: unknown) => {
+      setBusy(undefined)
+      setError((failure as Error).message)
+    })
+  }
+  const syncCode = (): void => {
+    setBusy('sync')
+    setError(undefined)
+    store.syncWiki(wiki.folder).then((outcome) => {
+      setBusy(undefined)
+      if ('upToDate' in outcome) {
+        store.setNotice({ kind: 'ok', text: t('team.syncUpToDate', { commit: outcome.commit.slice(0, 10) }) })
+        return
+      }
+      if (!outcome.opened) setError(manualText(outcome, t))
+      const sync = outcome.answer.sync
+      const lead = sync === undefined ? ''
+        : sync.upToDate === true ? t('team.syncUpToDate', { commit: sync.to.slice(0, 10) })
+          : sync.fallback === true ? t('team.syncFallback')
+            : t('team.syncFound', { files: sync.files, pages: sync.pages, from: (sync.from ?? '').slice(0, 10), to: sync.to.slice(0, 10) })
+      const notice = initText(outcome, t)
+      store.setNotice({ kind: notice?.kind ?? 'ok', text: [lead, notice?.text].filter(part => part !== undefined && part !== '').join('\n') })
     }, (failure: unknown) => {
       setBusy(undefined)
       setError((failure as Error).message)
@@ -342,6 +365,7 @@ function WikiDetailPane({ store, state, data, wiki, t }: { readonly store: OkfSt
             {busy === 'maintain' ? t('team.opening') : record === undefined ? t('team.maintain') : t('team.maintainOpen')}
           </Button>
           <Button disabled={busy !== undefined || wiki.missing === true || wiki.repo === undefined} title={wiki.repo === undefined ? t('team.initNoRepo') : t('team.initHint')} onClick={initialize}>{busy === 'initialize' ? t('team.initializing') : t('team.initialize')}</Button>
+          <Button disabled={busy !== undefined || wiki.missing === true || wiki.repo === undefined} title={wiki.repo === undefined ? t('team.initNoRepo') : codeTitle(wiki, t)} onClick={syncCode}>{busy === 'sync' ? t('team.syncing') : t('team.sync')}</Button>
           <Button disabled={busy !== undefined || wiki.missing === true} title={t('team.publishHint')} onClick={publish}>{busy === 'publish' ? t('team.publishing') : t('team.publish')}</Button>
           <Button disabled={busy !== undefined || wiki.missing === true} title={t('team.previewHint')} onClick={preview}>{busy === 'preview' ? t('preview.loading') : t('team.preview')}</Button>
         </div>
@@ -460,6 +484,22 @@ function Pointer({ hub, wiki, t }: { readonly hub: string, readonly wiki: Projec
  * @param t - translate seat.
  * @returns the text.
  */
+/**
+ * Where a project's code stands against its wiki, for a tooltip.
+ * @param wiki - the project wiki.
+ * @param t - translate.
+ * @returns the text.
+ */
+function codeTitle(wiki: ProjectWiki, t: T): string {
+  const code = wiki.code
+  const parts = [t('team.syncHint')]
+  if (code?.recorded !== undefined) parts.push(t('team.codeRecorded', { commit: code.recorded.slice(0, 10) }))
+  else parts.push(t('team.codeNotRecorded'))
+  if (code?.head !== undefined) parts.push(t('team.codeHead', { commit: code.head.slice(0, 10), at: new Date(code.checkedAt ?? '').toLocaleString() }))
+  if (code?.error !== undefined) parts.push(t('team.codeCheckFailed', { reason: code.error }))
+  return parts.join('\n')
+}
+
 /**
  * What to tell the user after Initialize from code.
  * @param outcome - the open outcome.

@@ -49,10 +49,11 @@ import type { BundleFile } from './publish.ts'
 import { GitHub, parseGitHubRemote } from './github.ts'
 import { canonical, cleanRepoPath, LibraryError, TOKEN_ENV } from './library.ts'
 import type { Library } from './library.ts'
+import { affectedPages, citedCommit, frontmatterOf, parseNameStatus as parseCodeChanges, sameCommit, schemaCommit, setSchemaCommit, syncPrompt } from './codesync.ts'
 import { describeReview, joinPage, reviewState, setKeys, splitPage, stampAgentEdit, today } from './review.ts'
 import { run, RunError } from './run.ts'
 import type {
-  ChangedPage, ChangesAnswer, GitProvider, LibraryEntry, MaintainAnswer, MaintainRecord, OpenPrAnswer, ProjectWiki, PublishAnswer,
+  ChangedPage, ChangesAnswer, GitProvider, LibraryEntry, MaintainAnswer, MaintainRecord, OpenPrAnswer, ProjectWiki, PublishAnswer, SyncAnswer,
   PullsAnswer, PullView, TeamConfig, TeamStatus, WikiDetail, WikiPage, WikiStats,
 } from '../types/okf.ts'
 
@@ -95,6 +96,8 @@ interface TeamFile {
   /** The repository has no commits yet (Set up the hub fills it). */
   empty?: boolean
   maintains: MaintainRecord[]
+  /** The latest commit of each project's code repository, by wiki folder, as Refresh last saw it. */
+  code?: Record<string, { head?: string, checkedAt: string, error?: string }>
 }
 
 /** The Team Wiki service the routes call. */
@@ -114,6 +117,8 @@ export interface Team {
   publish(folder: string): Promise<PublishAnswer>
   /** Check out the project's code read-only in its workspace and write the read-through task. */
   initialize(folder: string): Promise<MaintainAnswer>
+  /** Bring the project's code up to date in its workspace and write the task to update the pages its changes affect. */
+  sync(folder: string): Promise<SyncAnswer>
   /**
    * A read-only library entry for a project wiki on the base branch (the
    * `main/` checkout), so any session can attach it from the OKF chip.
@@ -474,6 +479,84 @@ export function openTeam(options: TeamOptions): Team {
   }
 
   /** Every project wiki on the base branch, with counts (cached per commit). */
+  /** The code commit a bundle folder reflects: SCHEMA.md's `code_commit`, else the one its pages cite most. */
+  const recordedCommit = async (dir: string): Promise<string | undefined> => {
+    const fromSchema = schemaCommit(await readFile(join(dir, 'SCHEMA.md'), 'utf8').catch(() => ''))
+    if (fromSchema !== undefined) return fromSchema
+    return citedCommit((await bundleFrontmatters(dir)).map(page => page.frontmatter))
+  }
+
+  /** Every page of a bundle folder (captures and archive left out) with its frontmatter text. */
+  const bundleFrontmatters = async (dir: string): Promise<{ path: string, frontmatter: string }[]> => {
+    const out: { path: string, frontmatter: string }[] = []
+    const walk = async (folder: string, rel: string): Promise<void> => {
+      const entries = await readdir(folder, { withFileTypes: true }).catch(() => [])
+      for (const entry of entries) {
+        if (out.length >= PAGE_CAP || entry.name.startsWith('.')) continue
+        const path = rel === '' ? entry.name : `${rel}/${entry.name}`
+        if (entry.isDirectory()) {
+          if (rel === '' && (entry.name === 'sources' || entry.name === 'archive')) continue
+          await walk(join(folder, entry.name), path)
+        } else if (entry.name.endsWith('.md')) {
+          out.push({ path, frontmatter: frontmatterOf(await readFile(join(folder, entry.name), 'utf8').catch(() => '')) })
+        }
+      }
+    }
+    await walk(dir, '')
+    return out
+  }
+
+  /** A wiki with what Refresh last saw of its code repository. */
+  const withCode = (data: TeamFile, wiki: ProjectWiki): ProjectWiki => {
+    if (wiki.repo === undefined) return wiki
+    const seen = data.code?.[wiki.folder]
+    if (seen === undefined) return wiki
+    const recorded = wiki.code?.recorded
+    const behind = recorded !== undefined && seen.head !== undefined && !sameCommit(recorded, seen.head)
+    return {
+      ...wiki,
+      code: {
+        ...recorded === undefined ? {} : { recorded },
+        ...seen.head === undefined ? {} : { head: seen.head },
+        checkedAt: seen.checkedAt,
+        ...seen.error === undefined ? {} : { error: seen.error },
+        ...behind ? { behind: true } : {},
+      },
+    }
+  }
+
+  /** Where a project's code repository is, and with which token it is read. */
+  const codeRemote = (url: string | undefined, name: string): { url: string, provider: GitProvider } => {
+    if (url === undefined || !/^(https?:\/\/|[\w.-]+@[\w.-]+:|ssh:\/\/)/.test(url)) {
+      throw new LibraryError('no-repo', `${name} has no code repository URL in the AGENTS.md registry. Add it to the Repo column first.`, 409)
+    }
+    let remote: ReturnType<typeof parseRemote>
+    try {
+      remote = parseRemote(url)
+    } catch (error) {
+      throw new LibraryError('bad-url', (error as Error).message)
+    }
+    return { url, provider: parseGitHubRemote(url, options.githubHost) !== undefined ? 'github' : remote.provider }
+  }
+
+  /** Ask each registered code repository for its latest commit (`git ls-remote`, no clone). */
+  const checkCode = async (data: TeamFile): Promise<void> => {
+    const wikis = (await listWikis(data)).map(item => item.wiki).filter(wiki => wiki.repo !== undefined && wiki.missing !== true)
+    const checkedAt = new Date().toISOString()
+    const code: NonNullable<TeamFile['code']> = {}
+    await Promise.all(wikis.map(async (wiki) => {
+      try {
+        const remote = codeRemote(wiki.repo, wiki.name)
+        const line = await git(options.dir, ['ls-remote', '--', remote.url, 'HEAD'], tokenFor(remote.provider))
+        const head = /^([0-9a-f]{40})\s/.exec(line)?.[1]
+        code[wiki.folder] = head === undefined ? { checkedAt, error: 'no HEAD' } : { head, checkedAt }
+      } catch (error) {
+        code[wiki.folder] = { checkedAt, error: (error as Error).message.split('\n')[0]?.slice(0, 200) ?? 'failed' }
+      }
+    }))
+    data.code = code
+  }
+
   const listWikis = async (data: TeamFile): Promise<{ wiki: ProjectWiki, pages: WikiPage[] }[]> => {
     if (data.team === undefined || !(await exists(mainDir))) return []
     const team = data.team
@@ -491,7 +574,8 @@ export function openTeam(options: TeamOptions): Team {
       const missing = !(await exists(join(mainDir, ...folder.split('/'))))
       const pages = missing ? [] : await readWikiPages(join(mainDir, ...folder.split('/')))
       const published = await publishedOf(project.name)
-      const base: ProjectWiki = { ...project, stats: statsOf(pages), ...missing ? { missing: true } : {}, ...published === undefined ? {} : { published } }
+      const recorded = missing || project.repo === undefined ? undefined : await recordedCommit(join(mainDir, ...folder.split('/')))
+      const base: ProjectWiki = { ...project, stats: statsOf(pages), ...missing ? { missing: true } : {}, ...published === undefined ? {} : { published }, ...recorded === undefined ? {} : { code: { recorded } } }
       statsCache.set(folder, { commit, wiki: base, pages })
       out.push({ wiki: { ...base, ...open === undefined ? {} : { maintainId: open.id } }, pages })
     }
@@ -508,7 +592,7 @@ export function openTeam(options: TeamOptions): Team {
         data = await load()
       }
     }
-    const wikis = (await listWikis(data)).map(item => item.wiki)
+    const wikis = (await listWikis(data)).map(item => withCode(data, item.wiki))
     // Records whose workspace a person deleted by hand are not offered again.
     const maintains = data.maintains.filter(record => record.closed === undefined)
     return {
@@ -604,6 +688,7 @@ export function openTeam(options: TeamOptions): Team {
   const refresh = (): Promise<TeamStatus> => serial(async () => {
     const data = await load()
     await syncMain(data)
+    await checkCode(data)
     // Tidy what the older one-folder-per-round layout left behind.
     for (const folder of new Set(data.maintains.filter(record => record.closed !== undefined).map(record => record.wiki))) {
       await sweepOld(data, folder, canonical(workspaceDirOf(folder)))
@@ -755,24 +840,14 @@ export function openTeam(options: TeamOptions): Team {
   })
 
   /**
-   * Check out a project's code repository read-only at `.code/<folder>/` in its
-   * maintenance workspace (git-ignored there), and write the session's
-   * read-through task.
+   * The project's code at its latest commit, read-only at `.code/<folder>/` in
+   * the maintenance workspace (git-ignored there). Kept between rounds with
+   * its history (but no file contents until read), so a sync can diff.
    */
-  const checkoutCode = async (record: MaintainRecord): Promise<NonNullable<MaintainAnswer['initialize']>> => {
+  const prepareCode = async (record: MaintainRecord): Promise<{ url: string, rel: string, target: string, commit: string }> => {
     const registry = parseRegistry(await readFile(join(record.workspace, 'AGENTS.md'), 'utf8').catch(() => ''))
-    const entry = registry?.entries.find(item => item.bundle === record.wiki)
-    const url = entry?.repo
-    if (url === undefined || !/^(https?:\/\/|[\w.-]+@[\w.-]+:|ssh:\/\/)/.test(url)) {
-      throw new LibraryError('no-repo', `${record.wikiName} has no code repository URL in the AGENTS.md registry. Add it to the Repo column first.`, 409)
-    }
-    let remote: ReturnType<typeof parseRemote>
-    try {
-      remote = parseRemote(url)
-    } catch (error) {
-      throw new LibraryError('bad-url', (error as Error).message)
-    }
-    const provider: GitProvider = parseGitHubRemote(url, options.githubHost) !== undefined ? 'github' : remote.provider
+    const { url, provider } = codeRemote(registry?.entries.find(item => item.bundle === record.wiki)?.repo, record.wikiName)
+    const token = tokenFor(provider)
     const seg = wikiSlug(record.wiki.split('/').at(-1) ?? record.wiki) || 'code'
     const rel = `.code/${seg}`
     const target = join(record.workspace, '.code', seg)
@@ -783,10 +858,33 @@ export function openTeam(options: TeamOptions): Team {
       await mkdir(join(exclude, '..'), { recursive: true })
       await writeFile(exclude, `${excluded.replace(/\s*$/, '')}${excluded.trim() === '' ? '' : '\n'}/.code/\n`)
     }
-    await rm(target, { recursive: true, force: true })
-    await mkdir(join(target, '..'), { recursive: true })
-    await git(join(target, '..'), ['clone', '--quiet', '--depth', '1', '--single-branch', '--', url, seg], tokenFor(provider))
-    const commit = await git(target, ['rev-parse', 'HEAD'])
+    const reusable = await exists(join(target, '.git'))
+      && !(await exists(join(target, '.git', 'shallow')))
+      && await git(target, ['config', '--get', 'remote.origin.url']).catch(() => '') === url
+    if (reusable) {
+      await git(target, ['fetch', '--quiet', 'origin', 'HEAD'], token)
+      await git(target, ['checkout', '--quiet', '--force', '--detach', 'FETCH_HEAD'])
+    } else {
+      await rm(target, { recursive: true, force: true })
+      await mkdir(join(target, '..'), { recursive: true })
+      await git(join(target, '..'), ['clone', '--quiet', '--filter=blob:none', '--single-branch', '--', url, seg], token)
+    }
+    return { url, rel, target, commit: await git(target, ['rev-parse', 'HEAD']) }
+  }
+
+  /** Record in the workspace's SCHEMA.md which code commit the wiki now reflects. */
+  const recordCommit = async (record: MaintainRecord, commit: string): Promise<void> => {
+    const schema = join(record.workspace, ...record.wiki.split('/'), 'SCHEMA.md')
+    const before = await readFile(schema, 'utf8').catch(() => undefined)
+    if (before !== undefined) await writeFile(schema, setSchemaCommit(before, commit, today()))
+  }
+
+  /**
+   * Check out a project's code and write the session's read-through task.
+   */
+  const checkoutCode = async (record: MaintainRecord): Promise<NonNullable<MaintainAnswer['initialize']>> => {
+    const { url, rel, commit } = await prepareCode(record)
+    await recordCommit(record, commit)
     const date = today()
     const folder = record.wiki
     const resource = /^https?:\/\//.test(url) ? `${webUrl(url)}/blob/${commit}/<path>` : `${url} at ${commit}, <path>`
@@ -822,6 +920,53 @@ export function openTeam(options: TeamOptions): Team {
     })
     const init = await serial(() => checkoutCode(opened.record))
     return { ...opened, initialize: init }
+  }
+
+  /**
+   * Sync from code: bring the project's code up to date in its workspace,
+   * diff it against the commit the wiki records, and write the task that
+   * updates the pages the changes affect. Without a usable recorded commit it
+   * falls back to Initialize's read-through.
+   */
+  const sync = async (folder: string): Promise<SyncAnswer> => {
+    // Nothing new in the code: say so without starting a round.
+    const early = await serial(async () => {
+      const data = await load()
+      const project = (await projectsIn(mainDir, needTeam(data))).find(candidate => candidate.folder === folder)
+      if (project === undefined) return undefined
+      const remote = codeRemote(project.repo, project.name)
+      const open = data.maintains.find(record => record.wiki === folder && record.closed === undefined)
+      const dir = open !== undefined && await exists(join(open.workspace, '.git')) ? join(open.workspace, ...folder.split('/')) : join(mainDir, ...folder.split('/'))
+      const recorded = await recordedCommit(dir)
+      if (recorded === undefined) return undefined
+      const head = /^([0-9a-f]{40})\s/.exec(await git(options.dir, ['ls-remote', '--', remote.url, 'HEAD'], tokenFor(remote.provider)).catch(() => ''))?.[1]
+      return head !== undefined && sameCommit(recorded, head) ? head : undefined
+    })
+    if (early !== undefined) return { upToDate: true, commit: early }
+    const opened = await maintain(folder)
+    const answer = await serial(async (): Promise<MaintainAnswer['sync'] & { init?: MaintainAnswer['initialize'] }> => {
+      const record = opened.record
+      const bundle = join(record.workspace, ...record.wiki.split('/'))
+      const recorded = await recordedCommit(bundle)
+      const code = await prepareCode(record)
+      const known = recorded !== undefined && await git(code.target, ['cat-file', '-e', `${recorded}^{commit}`]).then(() => true, () => false)
+      if (!known) {
+        // Nothing to diff from: read it all through, as Initialize does.
+        const init = await checkoutCode(record)
+        return { to: code.commit, files: 0, pages: 0, fallback: true, init }
+      }
+      if (sameCommit(recorded, code.commit)) return { from: recorded, to: code.commit, files: 0, pages: 0, upToDate: true }
+      const changes = parseCodeChanges(await git(code.target, ['diff', '--name-status', '-z', '-M', recorded, code.commit]))
+      const commits = (await git(code.target, ['log', '--no-decorate', '--format=%h %s', `${recorded}..${code.commit}`])).split('\n').filter(line => line !== '')
+      const affected = affectedPages(await bundleFrontmatters(bundle), changes)
+      await recordCommit(record, code.commit)
+      const resource = /^https?:\/\//.test(code.url) ? `${webUrl(code.url)}/blob/${code.commit}/<path>` : `${code.url} at ${code.commit}, <path>`
+      const prompt = syncPrompt({ wikiName: record.wikiName, folder: record.wiki, url: code.url, code: code.rel, from: recorded, to: code.commit, commits, changes, affected, resource, agent: options.agentActor, date: today() })
+      return { from: recorded, to: code.commit, files: changes.length, pages: affected.length, init: { code: code.rel, repo: code.url, commit: code.commit, prompt } }
+    })
+    const { init, ...info } = answer
+    // Refresh's badge reads the base branch; the workspace now records the new commit.
+    return { ...opened, sync: info, ...init === undefined ? {} : { initialize: init } }
   }
 
   /** A project wiki's one maintenance folder, reused round after round: `work/<folder>`. */
@@ -1338,7 +1483,7 @@ export function openTeam(options: TeamOptions): Team {
     }
   }
 
-  return { status, connect, refresh, wiki, pulls, create, maintain, changes, openPr, attach, publish, setupHub, initialize }
+  return { status, connect, refresh, wiki, pulls, create, maintain, changes, openPr, attach, publish, setupHub, initialize, sync }
 }
 
 /**

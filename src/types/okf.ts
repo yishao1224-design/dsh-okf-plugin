@@ -171,6 +171,7 @@ export const ROUTES = {
   teamPublish: `${API_BASE}/team/publish`,
   teamSetup: `${API_BASE}/team/setup`,
   teamInitialize: `${API_BASE}/team/initialize`,
+  teamSync: `${API_BASE}/team/sync`,
   teamChanges: `${API_BASE}/team/changes`,
   teamOpenPr: `${API_BASE}/team/open-pr`,
   teamAttach: `${API_BASE}/team/attach`,
@@ -230,6 +231,19 @@ export interface ProjectWiki {
   readonly stats: WikiStats
   /** The open maintenance workspace for it, if any. */
   readonly maintainId?: string
+  /**
+   * Its code repository against the wiki: the commit the wiki records
+   * (SCHEMA.md `code_commit`, else the one its sources cite most), and the
+   * latest commit Refresh saw (`git ls-remote`).
+   */
+  readonly code?: {
+    readonly recorded?: string
+    readonly head?: string
+    readonly checkedAt?: string
+    readonly error?: string
+    /** The code moved past what the wiki records. */
+    readonly behind?: true
+  }
 }
 
 /** A page of a project wiki, with its review state. */
@@ -345,10 +359,19 @@ export interface MaintainAnswer {
   /** Initialize from code: where the code is checked out, and the task to prefill in the session. */
   readonly initialize?: { readonly code: string, readonly repo: string, readonly commit: string, readonly prompt: string }
   readonly initializeError?: string
+  /**
+   * Sync from code: the commits compared, how many files changed and how many
+   * pages cite them. `upToDate` when nothing changed; `fallback` when the wiki
+   * records no usable commit and the task is the full read-through.
+   */
+  readonly sync?: { readonly from?: string, readonly to: string, readonly files: number, readonly pages: number, readonly upToDate?: true, readonly fallback?: true }
   /** New project wiki opens its first pull request right away; this says how that went. */
   readonly pr?: OpenPrAnswer
   readonly prError?: string
 }
+
+/** What Sync from code did: nothing when the code has not moved, else the round it started. */
+export type SyncAnswer = MaintainAnswer | { readonly upToDate: true, readonly commit: string }
 
 /** What Publish did. */
 export interface PublishAnswer {
