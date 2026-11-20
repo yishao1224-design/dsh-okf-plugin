@@ -164,6 +164,11 @@ export interface UiWorkspaceService {
   connectWorkspace(workspaceId: string): Promise<string>
   /** Select a Session and show its Conversation. */
   openSession(target: string): void
+  /**
+   * Open a Workspace's blank Session with text prefilled in its composer (the
+   * user presses send). Absent on older Harness builds.
+   */
+  startSession?(workspaceId?: string, options?: { readonly prompt?: string, readonly clearPreviousDraft?: boolean }): void
 }
 
 /** A context that reached the optional browser services. */

@@ -108,6 +108,8 @@ export interface Team {
   setupHub(): Promise<TeamStatus>
   /** kb-publish: render the bundle into published/Projects/ and open its pull request. */
   publish(folder: string): Promise<PublishAnswer>
+  /** Check out the project's code read-only in its workspace and write the read-through task. */
+  initialize(folder: string): Promise<MaintainAnswer>
   /**
    * A read-only library entry for a project wiki on the base branch (the
    * `main/` checkout), so any session can attach it from the OKF chip.
@@ -134,6 +136,8 @@ export interface CreateRequest {
   readonly repo?: string
   readonly owner?: string
   readonly summary?: string
+  /** Also check out the code repository and hand the session the read-through task. */
+  readonly initialize?: boolean
 }
 
 export { publishedDir } from './publish.ts'
@@ -727,6 +731,76 @@ export function openTeam(options: TeamOptions): Team {
     team: { maintainId: record.id, wiki: record.wiki, project: record.wikiName },
   })
 
+  /**
+   * Check out a project's code repository read-only at `.code/<folder>/` in its
+   * maintenance workspace (git-ignored there), and write the session's
+   * read-through task.
+   */
+  const checkoutCode = async (record: MaintainRecord): Promise<NonNullable<MaintainAnswer['initialize']>> => {
+    const registry = parseRegistry(await readFile(join(record.workspace, 'AGENTS.md'), 'utf8').catch(() => ''))
+    const entry = registry?.entries.find(item => item.bundle === record.wiki)
+    const url = entry?.repo
+    if (url === undefined || !/^(https?:\/\/|[\w.-]+@[\w.-]+:|ssh:\/\/)/.test(url)) {
+      throw new LibraryError('no-repo', `${record.wikiName} has no code repository URL in the AGENTS.md registry. Add it to the Repo column first.`, 409)
+    }
+    let remote: ReturnType<typeof parseRemote>
+    try {
+      remote = parseRemote(url)
+    } catch (error) {
+      throw new LibraryError('bad-url', (error as Error).message)
+    }
+    const provider: GitProvider = parseGitHubRemote(url, options.githubHost) !== undefined ? 'github' : remote.provider
+    const seg = wikiSlug(record.wiki.split('/').at(-1) ?? record.wiki) || 'code'
+    const rel = `.code/${seg}`
+    const target = join(record.workspace, '.code', seg)
+    // Never part of a wiki pull request.
+    const exclude = join(record.workspace, '.git', 'info', 'exclude')
+    const excluded = await readFile(exclude, 'utf8').catch(() => '')
+    if (!/^\/?\.code\/?$/m.test(excluded)) {
+      await mkdir(join(exclude, '..'), { recursive: true })
+      await writeFile(exclude, `${excluded.replace(/\s*$/, '')}${excluded.trim() === '' ? '' : '\n'}/.code/\n`)
+    }
+    await rm(target, { recursive: true, force: true })
+    await mkdir(join(target, '..'), { recursive: true })
+    await git(join(target, '..'), ['clone', '--quiet', '--depth', '1', '--single-branch', '--', url, seg], tokenFor(provider))
+    const commit = await git(target, ['rev-parse', 'HEAD'])
+    const date = today()
+    const folder = record.wiki
+    const resource = /^https?:\/\//.test(url) ? `${webUrl(url)}/blob/${commit}/<path>` : `${url} at ${commit}, <path>`
+    const prompt = [
+      `Initialize the ${record.wikiName} project wiki (the OKF bundle \`${folder}/\`) from the project's code.`,
+      '',
+      `The code is checked out read-only at \`${rel}/\` (${url} at ${commit.slice(0, 10)}). Read it through before writing:`,
+      '1. Survey: the directory tree, README and docs, build and dependency files, entry points, configuration, CI, and tests.',
+      '2. Then read the main modules in full, following the code from the entry points.',
+      '',
+      `Write these pages in \`${folder}/\`, following its SCHEMA.md, all as unreviewed drafts (status: draft, lifecycle: draft, generated: { by: ${options.agentActor}, at: ${date} }):`,
+      '- an overview: what the project is for, who uses it, its main flows;',
+      '- the architecture: the components, how they talk to each other, where data lives;',
+      '- one page per main module or service: its job, key files, interfaces and dependencies;',
+      '- the data model and the important entities;',
+      '- how to build, run, test and deploy it, with the exact commands;',
+      '- conventions, pitfalls and open questions you noticed.',
+      '',
+      `Back every claim with the code: capture the few key files (README, main configuration, schemas) as dated files under \`${folder}/sources/\`, and list what a page relies on in its \`sources\` (resource: ${resource}). Summarize; do not copy code wholesale.`,
+      `Link the pages to each other and from index.md, then run \`python scripts/okf.py links --bundle ${folder}\`, \`index\` and \`lint\`, and fix what lint reports.`,
+      `Never edit anything under \`.code/\`. When you are done, give me a short summary of what you wrote and what you were unsure about; I will press Open pull request.`,
+    ].join('\n')
+    return { code: rel, repo: url, commit, prompt }
+  }
+
+  const initialize = async (folder: string): Promise<MaintainAnswer> => {
+    const opened = await maintain(folder).catch(async (error: unknown) => {
+      // A project still in its setup pull request is not on the base branch: use its open workspace.
+      const data = await load()
+      const record = data.maintains.find(item => item.wiki === folder && item.closed === undefined)
+      if (record === undefined) throw error
+      return { record, entry: await options.library.put(entryFor(record)), workspace: record.workspace, created: false }
+    })
+    const init = await serial(() => checkoutCode(opened.record))
+    return { ...opened, initialize: init }
+  }
+
   /** Clone the repository into a fresh maintenance workspace on a new branch. */
   const newWorkspace = async (data: TeamFile, folder: string, name: string, isNew: boolean): Promise<MaintainRecord> => {
     const team = needTeam(data)
@@ -814,12 +888,16 @@ export function openTeam(options: TeamOptions): Team {
       const entry = await options.library.put(entryFor(record))
       return { record, entry, workspace: record.workspace, created: true }
     })
+    let init: Pick<MaintainAnswer, 'initialize' | 'initializeError'> = {}
+    if (request.initialize === true) {
+      init = await serial(() => checkoutCode(answer.record)).then(value => ({ initialize: value }), (error: unknown) => ({ initializeError: (error as Error).message }))
+    }
     try {
       const pr = await openPr(answer.record.id, { title: `Add the ${answer.record.wikiName} project wiki`, summary: `Sets up a new project wiki at \`${answer.record.wiki}\`.` })
       const fresh = (await load()).maintains.find(record => record.id === answer.record.id) ?? answer.record
-      return { ...answer, record: fresh, pr }
+      return { ...answer, ...init, record: fresh, pr }
     } catch (error) {
-      return { ...answer, prError: (error as Error).message }
+      return { ...answer, ...init, prError: (error as Error).message }
     }
   }
 
@@ -1135,7 +1213,7 @@ export function openTeam(options: TeamOptions): Team {
     }
   }
 
-  return { status, connect, refresh, wiki, pulls, create, maintain, changes, openPr, attach, publish, setupHub }
+  return { status, connect, refresh, wiki, pulls, create, maintain, changes, openPr, attach, publish, setupHub, initialize }
 }
 
 /**

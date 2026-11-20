@@ -170,6 +170,7 @@ export const ROUTES = {
   teamMaintain: `${API_BASE}/team/maintain`,
   teamPublish: `${API_BASE}/team/publish`,
   teamSetup: `${API_BASE}/team/setup`,
+  teamInitialize: `${API_BASE}/team/initialize`,
   teamChanges: `${API_BASE}/team/changes`,
   teamOpenPr: `${API_BASE}/team/open-pr`,
   teamAttach: `${API_BASE}/team/attach`,
@@ -334,6 +335,9 @@ export interface MaintainAnswer {
   readonly entry: LibraryEntry
   readonly workspace: string
   readonly created: boolean
+  /** Initialize from code: where the code is checked out, and the task to prefill in the session. */
+  readonly initialize?: { readonly code: string, readonly repo: string, readonly commit: string, readonly prompt: string }
+  readonly initializeError?: string
   /** New project wiki opens its first pull request right away; this says how that went. */
   readonly pr?: OpenPrAnswer
   readonly prError?: string
