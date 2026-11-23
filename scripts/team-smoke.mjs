@@ -125,7 +125,7 @@ const contexts = []
 const libraryDir = join(work, 'library')
 host.apply({
   connection: { fetch: { register: (route) => { routes.set(route.path, route); return async () => {} } } },
-  inject: (_deps, callback) => { callback({ systemPrompt: { context: (c) => { contexts.push(c); return () => {} } } }) },
+  inject: (_deps, callback) => { callback({ systemPrompt: { context: (c) => { contexts.push(c); return () => {} } }, tools: { register: () => () => {} } }) },
 }, { libraryDir, team: { githubApi, python, agentActor: 'dsh/smoke' } })
 
 async function api(path, { method = 'GET', query, body } = {}) {

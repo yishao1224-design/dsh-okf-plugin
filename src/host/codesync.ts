@@ -3,10 +3,14 @@
  * pages cite files that changed since, and the task a session gets to bring
  * those pages up to date.
  *
- * The commit lives in the project's SCHEMA.md frontmatter as `code_commit`
- * (with `code_synced`, the date), both OKF extension keys. Wikis written
- * before that key existed fall back to the commit their pages' `sources`
- * cite most often (`…/blob/<sha>/…`).
+ * The commit is recorded in the bundle's log.md: each sync adds a dated
+ * entry carrying `` `code_commit: <sha>` ``, and the newest one wins (log.md
+ * is newest first; rotated `archive/log-YYYY.md` files are read too). That
+ * keeps SCHEMA.md, the bundle conventions, out of every sync's diff. Wikis
+ * synced before that kept `code_commit` in SCHEMA.md's frontmatter, which is
+ * still read and is dropped the next time a sync records a commit; wikis
+ * with neither fall back to the commit their pages' `sources` cite most
+ * often (`…/blob/<sha>/…`).
  */
 
 import { splitPage } from './review.ts'
@@ -74,7 +78,56 @@ export function frontmatterOf(source: string): string {
 }
 
 /**
- * Set `code_commit` and `code_synced` in a SCHEMA.md.
+ * The `code_commit` the newest sync entry of a log records.
+ * @param log - log.md (or a rotated archive log), newest first.
+ * @returns the commit, or undefined when no entry records one.
+ */
+export function logCommit(log: string): string | undefined {
+  return /`code_commit:\s*([0-9a-f]{7,40})`/.exec(log)?.[1]
+}
+
+/**
+ * Add the sync entry to a log.md, as `okf.py log` adds entries: under
+ * today's `## YYYY-MM-DD` heading, newest first.
+ * @param log - the log.md text, or undefined when there is none yet.
+ * @param entry - what the sync did: the commit, the one before, and the repository.
+ * @param entry.commit - the code commit the wiki now reflects.
+ * @param entry.from - the commit it reflected before, if any.
+ * @param entry.repo - the code repository, for people reading the log.
+ * @param date - today, `YYYY-MM-DD`.
+ * @returns the new text.
+ */
+export function addLogCommit(log: string | undefined, entry: { commit: string, from?: string, repo: string }, date: string): string {
+  const eol = log?.includes('\r\n') === true ? '\r\n' : '\n'
+  const line = `* **Sync**: the wiki reflects ${entry.repo} at \`code_commit: ${entry.commit}\`${entry.from === undefined ? ' (first read-through)' : ` (was ${entry.from.slice(0, 10)})`}.`
+  const text = log ?? `# Bundle Update Log${eol}`
+  const lines = text.split(/\r?\n/)
+  const heading = `## ${date}`
+  const at = lines.indexOf(heading)
+  if (at >= 0) {
+    lines.splice(at + 1, 0, line)
+  } else {
+    const h1 = lines.findIndex(item => item.startsWith('# '))
+    lines.splice(h1 < 0 ? 0 : h1 + 1, 0, '', heading, line)
+  }
+  const out = lines.join(eol)
+  return out.endsWith(eol) ? out : out + eol
+}
+
+/**
+ * Drop the `code_commit` / `code_synced` keys earlier syncs wrote into a SCHEMA.md.
+ * @param schema - the SCHEMA.md text.
+ * @returns the text without them (the same string when it had none).
+ */
+export function dropSchemaCommit(schema: string): string {
+  const page = splitPage(schema)
+  if (page === undefined || !page.block.some(line => /^code_(commit|synced):/.test(line))) return schema
+  const block = page.block.filter(line => !/^code_(commit|synced):/.test(line))
+  return ['---', ...block, '---', ''].join(page.eol) + page.body
+}
+
+/**
+ * Set `code_commit` and `code_synced` in a SCHEMA.md (the earlier layout; kept for tests and old callers).
  * @param schema - the SCHEMA.md text.
  * @param commit - the code commit the wiki now reflects.
  * @param date - today, `YYYY-MM-DD`.
@@ -197,7 +250,7 @@ export function syncPrompt(task: SyncTask): string {
     '- Skip changes that do not change what the wiki says (tests, formatting, refactors with the same behaviour).',
     `- Capture a changed key file under \`${task.folder}/sources/\` as a new dated file only if a page needs it; never edit an existing capture.`,
     `- Add a log entry, run \`python scripts/okf.py links --bundle ${task.folder}\`, \`index\` and \`lint\`, and fix what lint reports.`,
-    `- SCHEMA.md already records \`code_commit: ${task.to}\`; leave it.`,
+    `- log.md already has a **Sync** entry recording \`code_commit: ${task.to}\`; keep it, and add your own entry for the pages you changed.`,
     '',
     'Never edit anything under `.code/`. When you are done, give me a short summary of what you changed and what you were unsure about; I will press Open pull request.',
   ].join('\n')
