@@ -193,7 +193,7 @@ What DSH's scheduler does and does not do (DSH 0.2.1): reminders run only while 
 
 A published change always needs a person, so the pull request is never auto-merged.
 
-**A hub without the toolchain.** Open pull request in any round adds the plugin's `scripts/okf.py` when the hub's base branch has none, so links, index, lint and log run; that pull request says so and needs a person once.
+**A hub without the toolchain.** Each round's workspace gets the plugin's `scripts/okf.py` when the hub's base branch has none (when the round opens, so the session can run it, and again at Open pull request), and the pull request carries it, so links, index, lint and log run; that pull request says so and needs a person once.
 
 **Publishing to the Azure DevOps wiki.** `examples/wiki-publish-to-ado.yml` runs when a merge to `main` changes `published/Projects/**`. It clones the existing ADO wiki repository (`vars.ADO_WIKI_REPO`, branch `vars.ADO_WIKI_BRANCH`, default `wikiMaster`) with `secrets.ADO_WIKI_PAT`, mirrors `published/Projects/` into its `Projects/` folder, and pushes. It refuses to commit if anything outside `Projects/` changed, so hand-written wiki pages are never touched. Since every change under `published/` needs a person, nothing reaches the ADO wiki without a review.
 
