@@ -186,6 +186,8 @@ must(await api('/api/okf/session', { method: 'POST', body: { sessionId: 's-m', b
 await new Promise((done) => { setTimeout(done, 50) })
 let text = contexts[0].text({ agent: { id: 's-m', session: { header: { id: 's-m', cwd: ws } } } })
 check(text.includes('team wiki maintenance workspace') && text.includes('generated: { by: dsh/smoke') && text.includes('Never add or edit a verified entry') && text.includes('Open pull request'), `maintain context: ${text.slice(0, 1200)}`)
+const wikiPath = maintained.entry.root.slice(ws.length + 1).split(/[\\/]/).join('/')
+check(text.includes(`link a bundle file by its path from the session's workspace, ${wikiPath}/<path> (e.g. [SCHEMA.md](${wikiPath}/SCHEMA.md)), never with a leading /`) && text.includes(`for example ${wikiPath}/concepts/foo.md`), `reply links are workspace-relative: ${text.slice(0, 1600)}`)
 text = contexts[0].text({ agent: { id: 's-m', session: { header: { id: 's-m', cwd: join(work, 'elsewhere') } } } })
 check(text.includes('Do not edit the bundle from this session') && !text.includes('Never add or edit a verified entry'), 'outside its workspace the wiki is read-only')
 
