@@ -475,6 +475,25 @@ check(again2.created === false && again2.record.id === round2.record.id, 'an ope
   const round = must(await api('/api/okf/team/maintain', { method: 'POST', body: { folder: 'glossary' } }), 'maintain in a hub without the toolchain')
   check(existsSync(join(round.workspace, 'scripts', 'okf.py')), `the round's workspace has scripts/okf.py: ${round.workspace}`)
   check(realpathSync.native(round.workspace) === realpathSync.native(leftover) && !readdirSync(join(teamDir, 'work')).some(name => name.startsWith('glossary-old-')), `the leftover workspace is reused, not set aside: ${round.workspace} ${readdirSync(join(teamDir, 'work')).join(', ')}`)
+  // A hub whose okf.py is older than the plugin's: the round refreshes it and its pull request carries the update.
+  const oldScript = readFileSync(join(fixture, 'scripts', 'okf.py'), 'utf8').replace(/^TOOLCHAIN_VERSION = .*$/m, 'TOOLCHAIN_VERSION = "2026.01.01"')
+  mkdirSync(join(plainRound, 'scripts'), { recursive: true })
+  writeFileSync(join(plainRound, 'scripts', 'okf.py'), oldScript)
+  git(plainRound, 'add', '-A')
+  git(plainRound, 'commit', '-qm', 'an older toolchain')
+  git(plainRound, 'push', '-q', '--force', plainOrigin, 'HEAD:main')
+  writeFileSync(join(round.workspace, 'scripts', 'okf.py'), oldScript)
+  git(round.workspace, 'fetch', '-q', 'origin')
+  const again = must(await api('/api/okf/team/maintain', { method: 'POST', body: { folder: 'glossary' } }), 'maintain with an older hub okf.py')
+  check(readFileSync(join(again.workspace, 'scripts', 'okf.py'), 'utf8') === readFileSync(join(root, 'templates', 'hub', 'scripts', 'okf.py'), 'utf8'), 'the older okf.py is refreshed from the plugin')
+  writeFileSync(join(again.workspace, 'glossary', 'concepts', 'term.md'), '---\ntype: Concept\ntitle: Term\ndescription: A term.\nstatus: draft\nupdated: 2026-11-23\n---\n\n# Term\n')
+  const refreshed = must(await api('/api/okf/team/open-pr', { method: 'POST', body: { id: again.record.id } }), 'open-pr with a refreshed okf.py')
+  check(refreshed.files.includes('scripts/okf.py') && refreshed.notes.some(note => note.includes('2026.01.01')) && refreshed.eligible === false, `the pull request carries the refreshed okf.py: ${JSON.stringify({ files: refreshed.files, notes: refreshed.notes, eligible: refreshed.eligible })}`)
+  // A hub copy that is not older is left alone.
+  const newer = readFileSync(join(again.workspace, 'scripts', 'okf.py'), 'utf8').replace(/^TOOLCHAIN_VERSION = .*$/m, 'TOOLCHAIN_VERSION = "2099.01.01"')
+  writeFileSync(join(again.workspace, 'scripts', 'okf.py'), newer)
+  must(await api('/api/okf/team/maintain', { method: 'POST', body: { folder: 'glossary' } }), 'maintain with a newer hub okf.py')
+  check(readFileSync(join(again.workspace, 'scripts', 'okf.py'), 'utf8') === newer, 'a newer hub okf.py is kept')
 }
 
 server.close()

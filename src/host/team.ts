@@ -1315,21 +1315,29 @@ export function openTeam(options: TeamOptions): Team {
 
   /** Lay out a new project wiki in a workspace. */
   /**
-   * Give a workspace the toolchain when the hub has none: copy the plugin's
-   * own `scripts/okf.py` (the one Set up the hub writes) to `okfScript`.
+   * Keep a workspace's toolchain current: copy the plugin's own
+   * `scripts/okf.py` (the one Set up the hub writes) to `okfScript` when the
+   * hub has none, or when the hub's copy is older (its `TOOLCHAIN_VERSION`
+   * is lower, or it has none). A hub copy that is newer or the same version
+   * is left alone, so a hub that updated its toolchain by hand keeps it.
    * Without it New project wiki could only write a stub SCHEMA.md, and Open
    * pull request could not run links, index, lint or log.
    * @param repo - the workspace.
-   * @returns whether it was added (the round's pull request then carries it).
+   * @returns what changed (the round's pull request then carries the file).
    */
-  const ensureToolchain = async (repo: string): Promise<boolean> => {
+  const ensureToolchain = async (repo: string): Promise<'added' | 'updated' | undefined> => {
     const script = join(repo, ...options.okfScript.split('/'))
-    if (await isFile(script)) return false
     const bundled = options.hubTemplate === undefined ? undefined : join(options.hubTemplate.dir, ...options.okfScript.split('/'))
-    if (bundled === undefined || !(await isFile(bundled))) return false
+    if (bundled === undefined || !(await isFile(bundled))) return undefined
+    const present = await isFile(script)
+    if (present) {
+      const ours = toolchainVersion(await readFile(bundled, 'utf8'))
+      const theirs = toolchainVersion(await readFile(script, 'utf8'))
+      if (ours === undefined || compareVersions(theirs ?? '0', ours) >= 0) return undefined
+    }
     await mkdir(join(script, '..'), { recursive: true })
     await copyFile(bundled, script)
-    return true
+    return present ? 'updated' : 'added'
   }
 
   const scaffold = async (repo: string, folder: string, name: string, schemaFrom: string | undefined): Promise<void> => {
@@ -1430,11 +1438,17 @@ export function openTeam(options: TeamOptions): Team {
     // What a wiki pull request may carry: the bundle, the project's published pages, and (for a new project) its registry row.
     // A hub without the toolchain gets the plugin's copy in this pull request (a person merges it once).
     await ensureToolchain(repo)
-    const toolchainAdded = !(await git(repo, ['cat-file', '-e', `origin/${base}:${options.okfScript}`]).then(() => true, () => false)) && await isFile(join(repo, ...options.okfScript.split('/')))
-    const scope = [record.wiki, publishedDir(record.wikiName), `${publishedDir(record.wikiName)}.md`, ...record.isNew === true ? ['AGENTS.md'] : [], ...toolchainAdded ? [options.okfScript] : []]
+    const scriptFile = join(repo, ...options.okfScript.split('/'))
+    const baseScript = await git(repo, ['show', `origin/${base}:${options.okfScript}`]).catch(() => undefined)
+    const ownScript = await readFile(scriptFile, 'utf8').catch(() => undefined)
+    // The workspace's toolchain differs from the base branch only when ensureToolchain added or refreshed it.
+    const toolchainAdded = baseScript === undefined && ownScript !== undefined
+    const toolchainUpdated = baseScript !== undefined && ownScript !== undefined && baseScript.replace(/\r\n/g, '\n').trimEnd() !== ownScript.replace(/\r\n/g, '\n').trimEnd()
+    const scope = [record.wiki, publishedDir(record.wikiName), `${publishedDir(record.wikiName)}.md`, ...record.isNew === true ? ['AGENTS.md'] : [], ...toolchainAdded || toolchainUpdated ? [options.okfScript] : []]
     const inScope = (path: string): boolean => scope.some(item => path === item || path.startsWith(`${item}/`))
     const notes: string[] = []
     if (toolchainAdded) notes.push(`The hub had no ${options.okfScript}, so this pull request adds the plugin's copy (the toolchain that writes SCHEMA.md and runs links, index and lint). It needs a person once.`)
+    if (toolchainUpdated) notes.push(`The hub's ${options.okfScript} is older than the plugin's (version ${toolchainVersion(baseScript ?? '') ?? 'unknown'} → ${toolchainVersion(ownScript ?? '') ?? 'unknown'}), so this pull request updates it. It needs a person once.`)
     let title = request.title?.trim() ?? ''
     let summary = request.summary?.trim() ?? ''
 
@@ -1705,6 +1719,31 @@ export function openTeam(options: TeamOptions): Team {
   }
 
   return { status, connect, refresh, wiki, pulls, create, maintain: openRound, changes, openPr, attach, publish, setupHub, initialize, sync, review, wikiAt }
+}
+
+/**
+ * The `TOOLCHAIN_VERSION` an okf.py declares.
+ * @param source - the script.
+ * @returns the version (a date such as `2026.11.23`), or undefined when it declares none.
+ */
+export function toolchainVersion(source: string): string | undefined {
+  return /^TOOLCHAIN_VERSION\s*=\s*["']([\w.-]+)["']/m.exec(source)?.[1]
+}
+
+/**
+ * Compare two dotted versions numerically, part by part.
+ * @param a - one version.
+ * @param b - the other.
+ * @returns negative, zero or positive as a is older, the same or newer.
+ */
+export function compareVersions(a: string, b: string): number {
+  const left = a.split(/[.-]/).map(Number)
+  const right = b.split(/[.-]/).map(Number)
+  for (let index = 0; index < Math.max(left.length, right.length); index += 1) {
+    const diff = (Number.isFinite(left[index]) ? left[index] ?? 0 : 0) - (Number.isFinite(right[index]) ? right[index] ?? 0 : 0)
+    if (diff !== 0) return diff
+  }
+  return 0
 }
 
 /**
