@@ -241,7 +241,10 @@ check(init.record.id === record.id && init.initialize?.code === '.code/payments'
 check(existsSync(join(ws, '.code', 'payments', 'src', 'main.ts')) && /^\/\.code\/$/m.test(readFileSync(join(ws, '.git', 'info', 'exclude'), 'utf8')) && !git(ws, 'status', '--porcelain').includes('.code'), 'the code is checked out and ignored')
 const prompt = init.initialize?.prompt ?? ''
 check(prompt.includes('`.code/payments/`') && prompt.includes('`payments/`') && prompt.includes('lifecycle: draft') && prompt.includes('generated: { by: dsh/smoke') && prompt.includes(`https://github.acme.com/pay/payments-service/blob/${init.initialize?.commit ?? ''}/<path>`) && prompt.includes('Never edit anything under `.code/`'), `prompt: ${prompt}`)
-check(readFileSync(join(ws, 'payments', 'SCHEMA.md'), 'utf8').includes(`code_commit: ${init.initialize?.commit ?? '?'}`), 'Initialize records the code commit in SCHEMA.md')
+const newestSync = text => /`code_commit:\s*([0-9a-f]{7,40})`/.exec(text)?.[1]
+let paymentsLog = readFileSync(join(ws, 'payments', 'log.md'), 'utf8')
+check(newestSync(paymentsLog) === init.initialize?.commit && paymentsLog.includes(`## ${today}\n* **Sync**: the wiki reflects https://github.acme.com/pay/payments-service at \`code_commit: ${init.initialize?.commit ?? '?'}\` (first read-through).`), `Initialize records the code commit in log.md: ${paymentsLog.slice(0, 400)}`)
+check(!readFileSync(join(ws, 'payments', 'SCHEMA.md'), 'utf8').includes('code_commit'), 'SCHEMA.md stays out of it')
 writeFileSync(join(ws, 'payments', 'concepts', 'overview.md'), [
   '---', 'type: Concept', 'title: Overview', 'description: What payments-service does.', 'status: draft', 'lifecycle: draft', 'updated: 2026-11-20',
   'sources:', `  - id: main`, `    resource: https://github.acme.com/pay/payments-service/blob/${init.initialize?.commit ?? ''}/src/main.ts`, '---', '', '# Overview', '', 'It pays.', '',
@@ -275,7 +278,9 @@ const synced = must(await api('/api/okf/team/sync', { method: 'POST', body: { fo
 check(synced.record?.id === record.id && synced.sync?.from === codeBefore && synced.sync.to === codeAfter && synced.sync.files === 2 && synced.sync.pages === 1, `sync: ${JSON.stringify(synced.sync)}`)
 const syncTask = synced.initialize?.prompt ?? ''
 check(syncTask.includes('- concepts/overview.md: src/main.ts') && syncTask.includes('- modified: src/main.ts') && syncTask.includes('- added: src/refund.ts') && syncTask.includes('Pay an amount; add refunds') && syncTask.includes(`blob/${codeAfter}/<path>`), `sync task: ${syncTask}`)
-check(readFileSync(join(ws, 'payments', 'SCHEMA.md'), 'utf8').includes(`code_commit: ${codeAfter}`) && existsSync(join(ws, '.code', 'payments', 'src', 'refund.ts')), 'the workspace records the new commit and has the new code')
+paymentsLog = readFileSync(join(ws, 'payments', 'log.md'), 'utf8')
+check(newestSync(paymentsLog) === codeAfter && paymentsLog.includes(`(was ${codeBefore.slice(0, 10)}).`) && existsSync(join(ws, '.code', 'payments', 'src', 'refund.ts')), 'the workspace log records the new commit and the workspace has the new code')
+check(syncTask.includes(`log.md already has a **Sync** entry recording \`code_commit: ${codeAfter}\``), 'the task says the sync entry is already there')
 
 // ── The model tools an automation task calls: sync, edit, open the pull request ──
 const callTool = async (name, args, cwd) => {
@@ -297,6 +302,10 @@ writeFileSync(join(codeSeed, 'src', 'main.ts'), 'export function pay(amount: num
 git(codeSeed, 'commit', '-qam', 'Pay in a currency')
 git(codeSeed, 'push', '-q', codeOrigin, 'HEAD:main')
 const codeThird = git(codeSeed, 'rev-parse', 'HEAD')
+// A wiki synced before the log entry existed keeps code_commit in SCHEMA.md: it is still the baseline, and is dropped once.
+writeFileSync(join(ws, 'payments', 'log.md'), readFileSync(join(ws, 'payments', 'log.md'), 'utf8').split('\n').filter(line => !line.includes('**Sync**')).join('\n'))
+const legacySchema = readFileSync(join(ws, 'payments', 'SCHEMA.md'), 'utf8').replace(/^---\n/, `---\ncode_commit: ${codeAfter}\ncode_synced: 2026-11-20\n`)
+writeFileSync(join(ws, 'payments', 'SCHEMA.md'), legacySchema)
 toolCall = await callTool('wiki_sync_from_code', {}, ws)
 check(toolCall.value?.status === 'task' && toolCall.value.folder === 'payments' && toolCall.value.workspace === ws && toolCall.value.from === codeAfter && toolCall.value.to === codeThird && toolCall.value.files === 1 && toolCall.value.pages === 1 && toolCall.value.readThrough === false, `tool: sync task: ${JSON.stringify(toolCall.value ?? toolCall.error?.message)}`)
 check(toolCall.value?.task.includes('- modified: src/main.ts') && toolCall.text.includes('Pay in a currency') && toolCall.text.includes('call wiki_open_pr with folder "payments"'), `tool: the task text: ${toolCall.text}`)
@@ -304,7 +313,8 @@ writeFileSync(join(ws, 'payments', 'concepts', 'overview.md'), readFileSync(join
 const pullsBefore = pulls.length
 toolCall = await callTool('wiki_open_pr', { summary: 'Payments now take a currency.' }, ws)
 check(toolCall.value?.status === 'opened' && toolCall.value.reused === true && toolCall.value.files.includes('payments/concepts/overview.md') && toolCall.text.startsWith('Updated pull request #'), `tool: open pr: ${JSON.stringify(toolCall.value ?? toolCall.error?.message)}`)
-check(readFileSync(join(ws, 'payments', 'SCHEMA.md'), 'utf8').includes(`code_commit: ${codeThird}`), 'the pull request records the synced commit')
+check(newestSync(readFileSync(join(ws, 'payments', 'log.md'), 'utf8')) === codeThird && !readFileSync(join(ws, 'payments', 'SCHEMA.md'), 'utf8').includes('code_'), 'the pull request records the synced commit in log.md and drops the old SCHEMA.md keys')
+check(git(ws, 'show', '--stat', '--format=', 'HEAD').includes('payments/log.md'), 'log.md is in the pushed commit')
 toolCall = await callTool('wiki_open_pr', {}, ws)
 check(toolCall.value?.status === 'opened' && toolCall.value.reused === true && pulls.length === pullsBefore, `tool: calling it again updates the same pull request: ${JSON.stringify(toolCall.value ?? toolCall.error?.message)}`)
 toolCall = await callTool('wiki_open_pr', { folder: 'payments', extra: 'x' })

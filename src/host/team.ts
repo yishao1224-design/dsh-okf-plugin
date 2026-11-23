@@ -51,7 +51,7 @@ import type { ChecksState, PullRequest, PullSummary } from './github.ts'
 import { AzureDevOps } from './azure.ts'
 import { canonical, cleanRepoPath, LibraryError, TOKEN_ENV } from './library.ts'
 import type { Library } from './library.ts'
-import { affectedPages, citedCommit, frontmatterOf, parseNameStatus as parseCodeChanges, sameCommit, schemaCommit, setSchemaCommit, syncPrompt } from './codesync.ts'
+import { addLogCommit, affectedPages, citedCommit, dropSchemaCommit, frontmatterOf, logCommit, parseNameStatus as parseCodeChanges, sameCommit, schemaCommit, syncPrompt } from './codesync.ts'
 import { describeReview, markReviewed, joinPage, reviewState, setKeys, splitPage, stampAgentEdit, today } from './review.ts'
 import { run, RunError } from './run.ts'
 import type {
@@ -565,8 +565,19 @@ export function openTeam(options: TeamOptions): Team {
   }
 
   /** Every project wiki on the base branch, with counts (cached per commit). */
-  /** The code commit a bundle folder reflects: SCHEMA.md's `code_commit`, else the one its pages cite most. */
+  /**
+   * The code commit a bundle folder reflects: the newest log.md sync entry
+   * (then rotated archive logs, newest year first), else SCHEMA.md's
+   * `code_commit` from earlier syncs, else the commit its pages cite most.
+   */
   const recordedCommit = async (dir: string): Promise<string | undefined> => {
+    const fromLog = logCommit(await readFile(join(dir, 'log.md'), 'utf8').catch(() => ''))
+    if (fromLog !== undefined) return fromLog
+    const rotated = (await readdir(join(dir, 'archive')).catch(() => [] as string[])).filter(name => /^log-\d{4}\.md$/.test(name)).sort().reverse()
+    for (const name of rotated) {
+      const found = logCommit(await readFile(join(dir, 'archive', name), 'utf8').catch(() => ''))
+      if (found !== undefined) return found
+    }
     const fromSchema = schemaCommit(await readFile(join(dir, 'SCHEMA.md'), 'utf8').catch(() => ''))
     if (fromSchema !== undefined) return fromSchema
     return citedCommit((await bundleFrontmatters(dir)).map(page => page.frontmatter))
@@ -955,11 +966,19 @@ export function openTeam(options: TeamOptions): Team {
     return { url, rel, target, commit: await git(target, ['rev-parse', 'HEAD']) }
   }
 
-  /** Record in the workspace's SCHEMA.md which code commit the wiki now reflects. */
-  const recordCommit = async (record: MaintainRecord, commit: string): Promise<void> => {
-    const schema = join(record.workspace, ...record.wiki.split('/'), 'SCHEMA.md')
+  /**
+   * Record in the workspace's log.md which code commit the wiki now reflects,
+   * and drop the `code_commit` an earlier sync left in SCHEMA.md (once).
+   */
+  const recordCommit = async (record: MaintainRecord, commit: string, repo: string, from?: string): Promise<void> => {
+    const bundle = join(record.workspace, ...record.wiki.split('/'))
+    const log = join(bundle, 'log.md')
+    await writeFile(log, addLogCommit(await readFile(log, 'utf8').catch(() => undefined), { commit, repo, ...from === undefined ? {} : { from } }, today()))
+    const schema = join(bundle, 'SCHEMA.md')
     const before = await readFile(schema, 'utf8').catch(() => undefined)
-    if (before !== undefined) await writeFile(schema, setSchemaCommit(before, commit, today()))
+    if (before === undefined) return
+    const after = dropSchemaCommit(before)
+    if (after !== before) await writeFile(schema, after)
   }
 
   /**
@@ -967,7 +986,7 @@ export function openTeam(options: TeamOptions): Team {
    */
   const checkoutCode = async (record: MaintainRecord): Promise<NonNullable<MaintainAnswer['initialize']>> => {
     const { url, rel, commit } = await prepareCode(record)
-    await recordCommit(record, commit)
+    await recordCommit(record, commit, url)
     const date = today()
     const folder = record.wiki
     const resource = /^https?:\/\//.test(url) ? `${webUrl(url)}/blob/${commit}/<path>` : `${url} at ${commit}, <path>`
@@ -1044,7 +1063,7 @@ export function openTeam(options: TeamOptions): Team {
       const changes = parseCodeChanges(await git(code.target, ['diff', '--name-status', '-z', '-M', recorded, code.commit]))
       const commits = (await git(code.target, ['log', '--no-decorate', '--format=%h %s', `${recorded}..${code.commit}`])).split('\n').filter(line => line !== '')
       const affected = affectedPages(await bundleFrontmatters(bundle), changes)
-      await recordCommit(record, code.commit)
+      await recordCommit(record, code.commit, code.url, recorded)
       const resource = /^https?:\/\//.test(code.url) ? `${webUrl(code.url)}/blob/${code.commit}/<path>` : `${code.url} at ${code.commit}, <path>`
       const prompt = syncPrompt({ wikiName: record.wikiName, folder: record.wiki, url: code.url, code: code.rel, from: recorded, to: code.commit, commits, changes, affected, resource, agent: options.agentActor, date: today() })
       return { from: recorded, to: code.commit, files: changes.length, pages: affected.length, init: { code: code.rel, repo: code.url, commit: code.commit, prompt } }
