@@ -1245,6 +1245,8 @@ export function openTeam(options: TeamOptions): Team {
     const team = needTeam(data)
     const open = await openRecordOf(data, folder)
     if (open !== undefined) {
+      // A hub without the toolchain: the session needs scripts/okf.py from the start (the pull request carries it).
+      await ensureToolchain(open.workspace)
       const entry = await options.library.put(entryFor(open))
       return { record: open, entry, workspace: open.workspace, created: false }
     }
@@ -1252,6 +1254,7 @@ export function openTeam(options: TeamOptions): Team {
     if (project === undefined || !(await exists(join(mainDir, ...folder.split('/'))))) throw new LibraryError('unknown-wiki', `There is no project wiki at ${folder} on the base branch. Refresh, or create it.`, 404)
     const record = await newWorkspace(data, folder, project.name, false)
     await save(data)
+    await ensureToolchain(record.workspace)
     const entry = await options.library.put(entryFor(record))
     return { record, entry, workspace: record.workspace, created: true }
   })

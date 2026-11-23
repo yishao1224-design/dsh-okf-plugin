@@ -455,6 +455,20 @@ check(again2.created === false && again2.record.id === round2.record.id, 'an ope
   check(made.pr?.files.includes('scripts/okf.py') && made.pr.files.includes('translation-hub/SCHEMA.md') && made.pr.eligible === false && made.pr.notes.some(note => note.includes('adds the plugin\'s copy')), `the setup pull request carries the toolchain: ${JSON.stringify(made.pr ?? made.prError)}`)
   check(!made.pr?.notes.some(note => note.includes('is not in the repository')), 'lint and index ran')
 }
+// A round in a hub whose base branch has no scripts/okf.py: the workspace gets it when the round opens.
+{
+  const plainRound = join(work, 'plain-round')
+  mkdirSync(plainRound)
+  writeFileSync(join(plainRound, 'AGENTS.md'), '# Team hub\n\n| Project | Bundle |\n|---|---|\n| Glossary | `glossary/` |\n')
+  cpSync(join(fixture, 'okf'), join(plainRound, 'glossary'), { recursive: true })
+  git(plainRound, 'init', '-q')
+  git(plainRound, 'add', '-A')
+  git(plainRound, 'commit', '-qm', 'hand-made hub with a wiki')
+  git(plainRound, 'push', '-q', '--force', plainOrigin, 'HEAD:main')
+  must(await api('/api/okf/team/refresh', { method: 'POST', body: {} }), 'refresh the hand-made hub')
+  const round = must(await api('/api/okf/team/maintain', { method: 'POST', body: { folder: 'glossary' } }), 'maintain in a hub without the toolchain')
+  check(existsSync(join(round.workspace, 'scripts', 'okf.py')), `the round's workspace has scripts/okf.py: ${round.workspace}`)
+}
 
 server.close()
 rmSync(work, { recursive: true, force: true })
