@@ -1277,6 +1277,7 @@ export function openTeam(options: TeamOptions): Team {
       }
       const record = await newWorkspace(data, folder, name, true)
       await save(data)
+      await ensureToolchain(record.workspace)
       await scaffold(record.workspace, folder, name, schemaFrom === undefined ? undefined : join(mainDir, schemaFrom, 'SCHEMA.md'))
       // Register the project in the hub's AGENTS.md (created when missing).
       const agents = join(record.workspace, 'AGENTS.md')
@@ -1308,6 +1309,24 @@ export function openTeam(options: TeamOptions): Team {
   }
 
   /** Lay out a new project wiki in a workspace. */
+  /**
+   * Give a workspace the toolchain when the hub has none: copy the plugin's
+   * own `scripts/okf.py` (the one Set up the hub writes) to `okfScript`.
+   * Without it New project wiki could only write a stub SCHEMA.md, and Open
+   * pull request could not run links, index, lint or log.
+   * @param repo - the workspace.
+   * @returns whether it was added (the round's pull request then carries it).
+   */
+  const ensureToolchain = async (repo: string): Promise<boolean> => {
+    const script = join(repo, ...options.okfScript.split('/'))
+    if (await isFile(script)) return false
+    const bundled = options.hubTemplate === undefined ? undefined : join(options.hubTemplate.dir, ...options.okfScript.split('/'))
+    if (bundled === undefined || !(await isFile(bundled))) return false
+    await mkdir(join(script, '..'), { recursive: true })
+    await copyFile(bundled, script)
+    return true
+  }
+
   const scaffold = async (repo: string, folder: string, name: string, schemaFrom: string | undefined): Promise<void> => {
     const target = join(repo, ...folder.split('/'))
     await mkdir(target, { recursive: true })
@@ -1404,9 +1423,13 @@ export function openTeam(options: TeamOptions): Team {
     const base = baseOf(data)
     const prefix = `${record.wiki}/`
     // What a wiki pull request may carry: the bundle, the project's published pages, and (for a new project) its registry row.
-    const scope = [record.wiki, publishedDir(record.wikiName), `${publishedDir(record.wikiName)}.md`, ...record.isNew === true ? ['AGENTS.md'] : []]
+    // A hub without the toolchain gets the plugin's copy in this pull request (a person merges it once).
+    await ensureToolchain(repo)
+    const toolchainAdded = !(await git(repo, ['cat-file', '-e', `origin/${base}:${options.okfScript}`]).then(() => true, () => false)) && await isFile(join(repo, ...options.okfScript.split('/')))
+    const scope = [record.wiki, publishedDir(record.wikiName), `${publishedDir(record.wikiName)}.md`, ...record.isNew === true ? ['AGENTS.md'] : [], ...toolchainAdded ? [options.okfScript] : []]
     const inScope = (path: string): boolean => scope.some(item => path === item || path.startsWith(`${item}/`))
     const notes: string[] = []
+    if (toolchainAdded) notes.push(`The hub had no ${options.okfScript}, so this pull request adds the plugin's copy (the toolchain that writes SCHEMA.md and runs links, index and lint). It needs a person once.`)
     let title = request.title?.trim() ?? ''
     let summary = request.summary?.trim() ?? ''
 
