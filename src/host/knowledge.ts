@@ -19,7 +19,7 @@
  */
 import { readFileSync, statSync } from 'node:fs'
 import { readFile, stat } from 'node:fs/promises'
-import { join } from 'node:path'
+import { join, relative, sep } from 'node:path'
 import { publishedDir } from './publish.ts'
 import { contains } from './library.ts'
 import type { Library } from './library.ts'
@@ -183,6 +183,20 @@ export function editableHere(entry: LibraryEntry, cwd: string | undefined): bool
 }
 
 /**
+ * How a reply links a bundle file: the bundle root's path from the session's
+ * workspace, with a trailing slash ('' when the workspace is the bundle
+ * root), or the absolute root when the workspace does not hold it.
+ * @param root - the bundle root.
+ * @param cwd - the session's workspace, if known.
+ * @returns the prefix to put before a bundle-relative path.
+ */
+export function replyPrefix(root: string, cwd: string | undefined): string {
+  if (cwd === undefined || !contains(cwd, root)) return `${root.split(sep).join('/').replace(/\/$/, '')}/`
+  const rel = relative(cwd, root).split(sep).join('/')
+  return rel === '' ? '' : `${rel}/`
+}
+
+/**
  * The context text for one entry.
  * @param entry - the selected bundle.
  * @param index - its index.md text.
@@ -204,15 +218,17 @@ export function contextText(entry: LibraryEntry, index: string | undefined, opti
     : entry.workspace === undefined
       ? ['- Do not edit files in the bundle.']
       : [`- Do not edit the bundle from this session. It is edited from its own workspace, ${entry.workspace}; if the user wants changes, tell them to open that workspace (OKF dialog → Open editing workspace).`]
+  const where = replyPrefix(entry.root, cwd)
   const lines = [
     `<okf_bundle id="${entry.id}" name="${entry.name.replace(/"/g, "'")}">`,
-    'The user attached an OKF (Open Knowledge Format) knowledge bundle to this session. Treat it as curated knowledge for this work: consult it before answering anything it may cover, and cite the pages you use by bundle path (for example concepts/foo.md).',
+    `The user attached an OKF (Open Knowledge Format) knowledge bundle to this session. Treat it as curated knowledge for this work: consult it before answering anything it may cover, and cite the pages you use (for example ${where}concepts/foo.md).`,
     `Bundle root: ${entry.root} (${origin}).`,
     '- Every page is markdown with YAML frontmatter: type, title, description, and usually status/lifecycle. index.md is the catalog; SCHEMA.md, when present, defines the conventions; log.md is the change history.',
     '- Use it like a wiki: start from the catalog, decide which pages bear on the question, and read them with your file tools (paths are under the bundle root). Follow the links between pages as far as the question needs. To find exact terms, grep or glob under the bundle root with patterns you choose.',
     ...editing,
     '- When you rely on a page whose lifecycle is needs_review or whose status is deprecated, say so in your answer.',
-    '- Links starting with / are relative to the bundle root.',
+    '- Inside bundle pages, links starting with / are relative to the bundle root.',
+    `- In your replies to the user, link a bundle file by ${where === '' ? 'its path from the bundle root' : `its path from the session's workspace, ${where}<path> (e.g. [SCHEMA.md](${where}SCHEMA.md))`}, never with a leading /: the chat resolves links against the workspace${where === '' ? '' : ', not the bundle root'}, so /SCHEMA.md would not be found.`,
   ]
   const body = index === undefined ? '' : stripFrontmatter(index)
   if (options.indexChars > 0 && body !== '') {
