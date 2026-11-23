@@ -244,7 +244,7 @@ export function syncPrompt(task: SyncTask): string {
     ...list(task.affected, page => `- ${page.path}: ${page.cites.join(', ')}`),
     '',
     'Then:',
-    `- Update every page whose content no longer matches the code. Write as an unreviewed draft (status: draft, lifecycle: draft, generated: { by: ${task.agent}, at: ${task.date} }); never write \`verified\`.`,
+    `- Update every page whose content no longer matches the code. Write as an unreviewed draft (status: draft, generated: { by: ${task.agent}, at: ${task.date} }); never write \`verified\`.`,
     `- Re-point the \`sources\` you re-read at the new commit (resource: ${task.resource}).`,
     '- Add a page for a new module or concept no page covers. For something removed, mark its page deprecated with a `## Deprecation` section; do not delete it.',
     '- Skip changes that do not change what the wiki says (tests, formatting, refactors with the same behaviour).',

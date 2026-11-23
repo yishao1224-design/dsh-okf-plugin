@@ -10,6 +10,7 @@
 import { readdir, readFile, stat } from 'node:fs/promises'
 import { join, relative, resolve, sep } from 'node:path'
 import { list, parsePage, text } from './frontmatter.ts'
+import { pageStage } from './stage.ts'
 import type { BundleSummary, LibraryEntry, PageContent, PageSummary } from '../types/okf.ts'
 
 /** Files OKF reserves; they need no `type`. */
@@ -137,15 +138,16 @@ export async function summarize(entry: LibraryEntry): Promise<BundleSummary> {
     const { meta, body } = parsePage(source)
     if (path === 'index.md') okfVersion = text(meta, 'okf_version')
     const type = text(meta, 'type')
-    const state = text(meta, 'lifecycle') ?? text(meta, 'status')
+    const tags = list(meta, 'tags')
+    const status = text(meta, 'status')
+    const stage = pageStage({ status, lifecycle: text(meta, 'lifecycle'), tags, path })
+    const state = stage ?? status
     if (!reserved) {
       if (type === undefined) untyped.push(path)
       else types[type] = (types[type] ?? 0) + 1
       if (state !== undefined) states[state] = (states[state] ?? 0) + 1
     }
     const description = text(meta, 'description')
-    const status = text(meta, 'status')
-    const lifecycle = text(meta, 'lifecycle')
     const updated = text(meta, 'updated')
     pages.push({
       path,
@@ -153,9 +155,9 @@ export async function summarize(entry: LibraryEntry): Promise<BundleSummary> {
       ...type === undefined ? {} : { type },
       ...description === undefined ? {} : { description },
       ...status === undefined ? {} : { status },
-      ...lifecycle === undefined ? {} : { lifecycle },
+      ...stage === undefined ? {} : { stage },
       ...updated === undefined ? {} : { updated },
-      tags: list(meta, 'tags'),
+      tags,
       reserved,
     })
   }

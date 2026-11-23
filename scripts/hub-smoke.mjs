@@ -189,7 +189,7 @@ check(record.wiki === 'payments' && record.wikiName === 'Payments' && maintained
 const today = new Date().toISOString().slice(0, 10)
 writeFileSync(join(ws, 'payments', 'concepts', 'refunds.md'), [
   '---', 'type: Concept', 'title: Refunds', 'description: How a card payment is refunded.',
-  'status: draft', 'lifecycle: draft', `created: ${today}`, `updated: ${today}`, 'generated:', '  by: dsh/smoke', `  at: ${today}`, 'tags: []', '---', '',
+  'status: draft', `created: ${today}`, `updated: ${today}`, 'generated:', '  by: dsh/smoke', `  at: ${today}`, 'tags: []', '---', '',
   '# Refunds', '', 'Refunds go back to the original card. See [the lifecycle](/concepts/knowledge-lifecycle.md).', '',
 ].join('\n'))
 const suggested = must(await api('/api/okf/team/changes', { query: { id: record.id } }), 'changes').suggested
@@ -241,13 +241,13 @@ check(init.sync?.fallback === true && init.sync.to === init.initialize?.commit, 
 check(init.record.id === record.id && init.initialize?.code === '.code/payments' && init.initialize.repo === 'https://github.acme.com/pay/payments-service' && /^[0-9a-f]{40}$/.test(init.initialize.commit), `initialize: ${JSON.stringify(init.initialize ?? init)}`)
 check(existsSync(join(ws, '.code', 'payments', 'src', 'main.ts')) && /^\/\.code\/$/m.test(readFileSync(join(ws, '.git', 'info', 'exclude'), 'utf8')) && !git(ws, 'status', '--porcelain').includes('.code'), 'the code is checked out and ignored')
 const prompt = init.initialize?.prompt ?? ''
-check(prompt.includes('`.code/payments/`') && prompt.includes('`payments/`') && prompt.includes('lifecycle: draft') && prompt.includes('generated: { by: dsh/smoke') && prompt.includes(`https://github.acme.com/pay/payments-service/blob/${init.initialize?.commit ?? ''}/<path>`) && prompt.includes('Never edit anything under `.code/`'), `prompt: ${prompt}`)
+check(prompt.includes('`.code/payments/`') && prompt.includes('`payments/`') && prompt.includes('status: draft') && !prompt.includes('lifecycle') && prompt.includes('generated: { by: dsh/smoke') && prompt.includes(`https://github.acme.com/pay/payments-service/blob/${init.initialize?.commit ?? ''}/<path>`) && prompt.includes('Never edit anything under `.code/`'), `prompt: ${prompt}`)
 const newestSync = text => /`code_commit:\s*([0-9a-f]{7,40})`/.exec(text)?.[1]
 let paymentsLog = readFileSync(join(ws, 'payments', 'log.md'), 'utf8')
 check(newestSync(paymentsLog) === init.initialize?.commit && paymentsLog.includes(`## ${today}\n* **Sync**: the wiki reflects https://github.acme.com/pay/payments-service at \`code_commit: ${init.initialize?.commit ?? '?'}\` (first read-through).`), `Initialize records the code commit in log.md: ${paymentsLog.slice(0, 400)}`)
 check(!readFileSync(join(ws, 'payments', 'SCHEMA.md'), 'utf8').includes('code_commit'), 'SCHEMA.md stays out of it')
 writeFileSync(join(ws, 'payments', 'concepts', 'overview.md'), [
-  '---', 'type: Concept', 'title: Overview', 'description: What payments-service does.', 'status: draft', 'lifecycle: draft', 'updated: 2026-11-20',
+  '---', 'type: Concept', 'title: Overview', 'description: What payments-service does.', 'status: draft', 'lifecycle: draft', 'tags: [core, needs-review]', 'updated: 2026-11-20',
   'sources:', `  - id: main`, `    resource: https://github.acme.com/pay/payments-service/blob/${init.initialize?.commit ?? ''}/src/main.ts`, '---', '', '# Overview', '', 'It pays.', '',
 ].join('\n'))
 pr = must(await api('/api/okf/team/open-pr', { method: 'POST', body: { id: record.id } }), 'open-pr after initialize')
@@ -329,7 +329,7 @@ answer: {
 const reviewed = must(await api('/api/okf/team/review', { method: 'POST', body: { folder: 'payments', paths: ['concepts/overview.md', 'concepts/missing.md'] } }), 'mark reviewed')
 const overviewText = readFileSync(join(ws, 'payments', 'concepts', 'overview.md'), 'utf8')
 check(reviewed.reviewer === 'alice-gh' && reviewed.marked.length === 1 && reviewed.skipped.length === 1 && reviewed.record.id === record.id, `review: ${JSON.stringify({ ...reviewed, entry: undefined })}`)
-check(/verified:\n {2}- by: human:alice-gh\n {4}at: \d{4}-\d{2}-\d{2}/.test(overviewText) && overviewText.includes('lifecycle: active') && overviewText.includes('status: stable') && /stale_after: \d{4}-\d{2}-\d{2}/.test(overviewText), `marked page: ${overviewText}`)
+check(/verified:\n {2}- by: human:alice-gh\n {4}at: \d{4}-\d{2}-\d{2}/.test(overviewText) && !overviewText.includes('lifecycle') && overviewText.includes('tags: [core]\n') && overviewText.includes('status: stable') && /stale_after: \d{4}-\d{2}-\d{2}/.test(overviewText), `marked page: ${overviewText}`)
 check(reviewed.pr?.pr !== undefined && reviewed.pr.eligible === false && !reviewed.pr.stamped.includes('concepts/overview.md'), `the review PR needs a person and is not reset: ${JSON.stringify(reviewed.pr ?? reviewed.prError)}`)
 const preview = must(await api('/api/okf/team/attach', { method: 'POST', body: { folder: 'payments' } }), 'attach payments')
 check(preview.entry.id === 'team-main-payments' && preview.entry.teamWiki === 'payments' && preview.entry.id !== record.entryId, `preview entry stays apart from the workspace entry: ${JSON.stringify(preview.entry)}`)

@@ -171,7 +171,7 @@ const ws = maintained.workspace
 const today = new Date().toISOString().slice(0, 10)
 writeFileSync(join(ws, 'okf', 'payments', 'concepts', 'release-process.md'), [
   '---', 'type: Concept', 'title: Release Process', 'description: How the team ships a service to staging and production.',
-  'status: draft', 'lifecycle: draft', `created: ${today}`, `updated: ${today}`, 'generated:', '  by: dsh/smoke', `  at: ${today}`, 'tags: []', '---', '',
+  'status: draft', `created: ${today}`, `updated: ${today}`, 'generated:', '  by: dsh/smoke', `  at: ${today}`, 'tags: []', '---', '',
   '# Release Process', '', 'Verify on staging first. See [the lifecycle](/concepts/knowledge-lifecycle.md).', '',
 ].join('\n'))
 let pr = must(await api('/api/okf/team/open-pr', { method: 'POST', body: { id: record.id, title: 'Add the release process page' } }), 'open-pr 1')

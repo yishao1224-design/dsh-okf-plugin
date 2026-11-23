@@ -349,13 +349,13 @@ export async function readWikiPages(dir: string): Promise<WikiPage[]> {
       const meta = parsePage(source).meta
       const review = reviewState(source)
       const staleAfter = metaText(meta, 'stale_after')
-      const overdue = review.lifecycle === 'needs_review' || (staleAfter !== undefined && staleAfter.slice(0, 10) < now)
+      const overdue = review.stage === 'needs_review' || (staleAfter !== undefined && staleAfter.slice(0, 10) < now)
       const type = metaText(meta, 'type')
       pages.push({
         path,
         title: metaText(meta, 'title') ?? path,
         ...type === undefined ? {} : { type },
-        ...review.lifecycle === undefined ? {} : { lifecycle: review.lifecycle },
+        ...review.stage === undefined ? {} : { stage: review.stage },
         review: review.state,
         ...review.reviewer === undefined ? {} : { reviewer: review.reviewer },
         ...review.reviewedAt === undefined ? {} : { reviewedAt: review.reviewedAt },
@@ -997,7 +997,7 @@ export function openTeam(options: TeamOptions): Team {
       '1. Survey: the directory tree, README and docs, build and dependency files, entry points, configuration, CI, and tests.',
       '2. Then read the main modules in full, following the code from the entry points.',
       '',
-      `Write these pages in \`${folder}/\`, following its SCHEMA.md, all as unreviewed drafts (status: draft, lifecycle: draft, generated: { by: ${options.agentActor}, at: ${date} }):`,
+      `Write these pages in \`${folder}/\`, following its SCHEMA.md, all as unreviewed drafts (status: draft, generated: { by: ${options.agentActor}, at: ${date} }):`,
       '- an overview: what the project is for, who uses it, its main flows;',
       '- the architecture: the components, how they talk to each other, where data lives;',
       '- one page per main module or service: its job, key files, interfaces and dependencies;',
@@ -1347,10 +1347,10 @@ export function openTeam(options: TeamOptions): Team {
       if (!(await isFile(join(target, 'SCHEMA.md')))) {
         await writeFile(join(target, 'SCHEMA.md'), [
           '---', 'type: Reference', `title: ${name} — Schema & Conventions`, `description: Conventions for the ${name} project wiki.`,
-          'status: draft', 'lifecycle: draft', `created: ${date}`, `updated: ${date}`, '---', '',
+          'status: draft', `created: ${date}`, `updated: ${date}`, '---', '',
           `# ${name} — Schema & Conventions`, '',
-          'Every page is OKF v0.2 markdown with YAML frontmatter: `type`, `title`, `description`, `status`, `lifecycle`, `updated`.',
-          'Pages an agent writes are unreviewed drafts. A person marks a page reviewed by adding `verified: [{ by: human:<id>, at: <date> }]` and setting `lifecycle: active`.',
+          'Every page is OKF v0.2 markdown with YAML frontmatter: `type`, `title`, `description`, `status` (`draft | stable | deprecated`), `updated`. A stable page that needs re-checking carries the `needs-review` tag.',
+          'Pages an agent writes are unreviewed drafts. A person marks a page reviewed by adding `verified: [{ by: human:<id>, at: <date> }]` and setting `status: stable`.',
           '',
         ].join('\n'))
       }
@@ -1790,7 +1790,7 @@ export function prBody(summary: string, pages: readonly { path: string, status: 
       ? 'Eligible: lint passed and every page touched was unreviewed. CI re-checks this before merging.'
       : `Needs a person:\n${reasons.map(reason => `- ${reason}`).join('\n')}`,
     '',
-    'Pages written by the agent are unreviewed drafts. To mark a page reviewed, a person adds `verified: [{ by: human:<you>, at: <date> }]`, sets `lifecycle: active` / `status: stable` and a `stale_after` date.',
+    'Pages written by the agent are unreviewed drafts. To mark a page reviewed, a person adds `verified: [{ by: human:<you>, at: <date> }]`, sets `status: stable` (removing a `needs-review` tag) and a `stale_after` date.',
     ...lint === '' ? [] : ['', '<details><summary>okf.py lint</summary>', '', '```', lint.slice(0, 4000), '```', '</details>'],
     ...notes.length === 0 ? [] : ['', ...notes.map(note => `> ${note}`)],
     '',

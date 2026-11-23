@@ -506,7 +506,7 @@ function EditWorkspace({ store, entry, t }: { readonly store: OkfStore, readonly
 }
 
 /**
- * The badge tone of a lifecycle or status value.
+ * The badge tone of a stage or status value.
  * @param state - the value.
  * @returns a badge style name.
  */
@@ -529,7 +529,7 @@ function Catalog({ summary, onOpen, t }: { readonly summary: BundleSummary, read
     const words = filter.toLowerCase().split(/\s+/).filter(Boolean)
     const matched = summary.pages.filter((page) => {
       if (words.length === 0) return true
-      const hay = `${page.title} ${page.path} ${page.description ?? ''} ${page.tags.join(' ')} ${page.type ?? ''} ${page.lifecycle ?? ''}`.toLowerCase()
+      const hay = `${page.title} ${page.path} ${page.description ?? ''} ${page.tags.join(' ')} ${page.type ?? ''} ${page.stage ?? ''}`.toLowerCase()
       return words.every(word => hay.includes(word))
     })
     const byGroup = new Map<string, PageSummary[]>()
@@ -561,7 +561,7 @@ function Catalog({ summary, onOpen, t }: { readonly summary: BundleSummary, read
  */
 function PageRow({ page, onOpen }: { readonly page: PageSummary, readonly onOpen: (path: string) => void }): ReactNode {
   const [hover, setHover] = useState(false)
-  const state = page.lifecycle ?? page.status
+  const state = page.stage ?? page.status
   return (
     <button type="button" style={{ ...st('pageRow'), ...hover ? st('hover') : {} }} onClick={() => { onOpen(page.path) }} onPointerEnter={() => { setHover(true) }} onPointerLeave={() => { setHover(false) }}>
       <span style={st('pageTitle')}>
@@ -636,7 +636,7 @@ function PageView({ store, entry, path, summary, t }: { readonly store: OkfStore
           {!/^\s*#\s/.test(page.value.body) && <h3 style={st('previewTitle')}>{known?.title ?? path}</h3>}
           <div style={{ ...st('stats'), marginBottom: 6 }}>
             {known?.type !== undefined && <span style={st('badge')}>{known.type}</span>}
-            {(known?.lifecycle ?? known?.status) !== undefined && <span style={sx('badge', stateTone(known?.lifecycle ?? known?.status))}>{known?.lifecycle ?? known?.status}</span>}
+            {(known?.stage ?? known?.status) !== undefined && <span style={sx('badge', stateTone(known?.stage ?? known?.status))}>{(known?.stage ?? known?.status)?.replace('_', ' ')}</span>}
             {known?.updated !== undefined && <span style={st('badge')}>{known.updated}</span>}
           </div>
           {Object.keys(page.value.meta).length > 0 && (

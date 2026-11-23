@@ -22,6 +22,7 @@
  */
 import { posix } from 'node:path'
 import { reviewState, splitPage } from './review.ts'
+import { pageStage } from './stage.ts'
 import { parsePage, text as metaText } from './frontmatter.ts'
 
 /** A file of the bundle. */
@@ -122,8 +123,9 @@ function skipReason(path: string, source: string): string | undefined {
   if (path === 'index.md' || path === 'log.md' || path === 'SCHEMA.md' || path.endsWith('/index.md')) return 'bundle bookkeeping'
   if (path.startsWith('sources/')) return 'raw source capture'
   if (path.startsWith('archive/')) return 'archived'
-  const lifecycle = metaText(parsePage(source).meta, 'lifecycle') ?? metaText(parsePage(source).meta, 'status')
-  if (lifecycle === 'deprecated' || lifecycle === 'archived') return lifecycle
+  const meta = parsePage(source).meta
+  const stage = pageStage({ status: metaText(meta, 'status'), lifecycle: metaText(meta, 'lifecycle'), path })
+  if (stage === 'deprecated' || stage === 'archived') return stage
   return undefined
 }
 
@@ -201,10 +203,9 @@ export function renderBundle(files: readonly BundleFile[], project: PublishProje
     const split = splitPage(file.source)
     let body = (split?.body ?? file.source).replace(/\r\n/g, '\n').replace(/^\n+/, '')
     const review = reviewState(file.source)
-    const lifecycle = review.lifecycle
     const status = review.state === 'reviewed'
       ? `> Reviewed by ${review.reviewer ?? '?'} on ${review.reviewedAt ?? '?'}.`
-      : lifecycle === 'needs_review'
+      : review.stage === 'needs_review'
         ? '> **Due for re-review.** Its sources changed or its review date passed; check before relying on it.'
         : `> **Unreviewed.** ${review.generatedBy === undefined ? 'Written by an agent' : `Written by ${review.generatedBy}${review.generatedAt === undefined ? '' : ` on ${review.generatedAt}`}`}; a person has not checked it yet.`
     const heading = firstHeading(body)

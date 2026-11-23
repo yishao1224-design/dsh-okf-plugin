@@ -4,24 +4,28 @@
  * The bundle has no separate "reviewed" field. Following `okf/SCHEMA.md` in
  * knowledgeAgent, a page counts as **reviewed** when all of these hold:
  *
- * - `lifecycle: active`;
+ * - `status: stable`, without the `needs-review` tag (and, on a page that
+ *   still carries the retired `lifecycle` key, `lifecycle: active`);
  * - its latest `verified` entry is by a person (`by: human:<id>`);
  * - that verification is not older than the page's `generated.at`, i.e. nobody
  *   rewrote the page after the person confirmed it.
  *
  * Everything else is **unreviewed**. An agent edit therefore resets a page to
  * unreviewed by construction: it replaces `generated` with `{ by: <agent>, at:
- * today }` and sets `lifecycle: draft`, and never writes `verified` (only a
+ * today }`, sets `status: draft` (dropping a legacy `lifecycle` key), and never writes `verified` (only a
  * person's review may, see SCHEMA.md "generated vs verified").
  *
  * The Host ships with no YAML library, so this edits the frontmatter as text,
  * one top-level key block at a time, and leaves every other key untouched.
  */
 
+import { pageStage, REVIEW_TAG, type PageStage } from './stage.ts'
+
 /** A page's review state. */
 export interface ReviewState {
   readonly state: 'reviewed' | 'unreviewed'
-  readonly lifecycle?: string
+  /** The lifecycle stage (see stage.ts); an overdue `stale_after` is not counted here. */
+  readonly stage?: PageStage
   readonly reviewer?: string
   readonly reviewedAt?: string
   readonly generatedBy?: string
@@ -95,6 +99,35 @@ function blocks(lines: readonly string[]): KeyBlock[] {
  */
 export function keyLines(lines: readonly string[], key: string): string[] | undefined {
   return blocks(lines).find(block => block.key === key)?.lines
+}
+
+/**
+ * Remove top-level keys with every line that belongs to them.
+ * @param lines - the frontmatter lines.
+ * @param keys - the keys.
+ * @returns the new frontmatter lines.
+ */
+export function dropKeys(lines: readonly string[], keys: readonly string[]): string[] {
+  return blocks(lines).filter(block => block.key === undefined || !keys.includes(block.key)).flatMap(block => block.lines)
+}
+
+/**
+ * The `tags` list, inline (`[a, b]`), block (`- a`) or a single scalar.
+ * @param lines - the frontmatter lines.
+ * @returns the tags.
+ */
+export function tagsIn(lines: readonly string[]): string[] {
+  const own = keyLines(lines, 'tags')
+  if (own === undefined) return []
+  const head = scalar((own[0] ?? '').replace(/^tags\s*:/, '')) ?? ''
+  const unquote = (value: string): string => value.trim().replace(/^(['"])(.*)\1$/, '$2')
+  if (head.startsWith('[')) return head.replace(/^\[|\]$/g, '').split(',').map(unquote).filter(tag => tag !== '')
+  if (head !== '') return [unquote(head)]
+  return own.slice(1).flatMap(line => {
+    const item = /^\s*-\s*(.*)$/.exec(line)
+    const value = item === null ? undefined : scalar(item[1] ?? '')
+    return value === undefined ? [] : [unquote(value)]
+  })
 }
 
 /**
@@ -194,20 +227,22 @@ function notBefore(a: string, b: string): boolean {
 export function reviewState(source: string): ReviewState {
   const page = splitPage(source)
   if (page === undefined) return { state: 'unreviewed' }
+  const status = scalar((keyLines(page.block, 'status')?.[0] ?? '').replace(/^status\s*:/, ''))
   const lifecycle = scalar((keyLines(page.block, 'lifecycle')?.[0] ?? '').replace(/^lifecycle\s*:/, ''))
+  const stage = pageStage({ status, lifecycle, tags: tagsIn(page.block) })
   const generatedLines = keyLines(page.block, 'generated')
   const generated = generatedLines === undefined ? {} : actor([generatedLines[0]?.replace(/^generated\s*:/, '') ?? '', ...generatedLines.slice(1)])
   const verifiedLines = keyLines(page.block, 'verified')
   const verified = verifiedLines === undefined ? [] : verifiedEntries(verifiedLines)
   const last = verified[verified.length - 1]
   const base = {
-    ...lifecycle === undefined ? {} : { lifecycle },
+    ...stage === undefined ? {} : { stage },
     ...generated.by === undefined ? {} : { generatedBy: generated.by },
     ...generated.at === undefined ? {} : { generatedAt: generated.at },
   }
   const human = last?.by?.startsWith('human:') === true && last.at !== undefined
   const current = human && (generated.at === undefined || notBefore(last.at ?? '', generated.at))
-  if (lifecycle === 'active' && human && current) {
+  if (stage === 'active' && human && current) {
     return { state: 'reviewed', ...base, reviewer: last.by?.slice('human:'.length) ?? '', reviewedAt: last.at ?? '' }
   }
   return { state: 'unreviewed', ...base }
@@ -219,7 +254,7 @@ export function reviewState(source: string): ReviewState {
  * @returns the line.
  */
 export function describeReview(review: ReviewState): string {
-  const life = review.lifecycle === undefined ? '' : `, lifecycle ${review.lifecycle}`
+  const life = review.stage === undefined ? '' : `, ${review.stage.replace('_', ' ')}`
   if (review.state === 'reviewed') return `reviewed by ${review.reviewer ?? '?'} on ${review.reviewedAt ?? '?'}${life}`
   const by = review.generatedBy === undefined ? '' : `, written by ${review.generatedBy}${review.generatedAt === undefined ? '' : ` on ${review.generatedAt}`}`
   return `unreviewed${by}${life}`
@@ -246,18 +281,18 @@ export function stampAgentEdit(source: string, agent: string, date: string): str
   if (page === undefined) throw new Error('The page has no YAML frontmatter.')
   const values: Record<string, string[]> = {
     status: ['status: draft'],
-    lifecycle: ['lifecycle: draft'],
     updated: [`updated: ${date}`],
     generated: ['generated:', `  by: ${agent}`, `  at: ${date}`],
   }
   if (keyLines(page.block, 'created') === undefined) values.created = [`created: ${date}`]
-  return joinPage({ ...page, block: setKeys(page.block, values) })
+  return joinPage({ ...page, block: setKeys(dropKeys(page.block, ['lifecycle']), values) })
 }
 
 /**
  * Mark a page reviewed by a person: append `{ by: human:<id>, at: <date> }` to
- * `verified` (earlier entries stay, they are history) and set
- * `lifecycle: active`, `status: stable`, `stale_after` and `updated`.
+ * `verified` (earlier entries stay, they are history), set `status: stable`,
+ * `stale_after` and `updated`, and clear the `needs-review` tag and a legacy
+ * `lifecycle` key.
  * @param source - the page.
  * @param reviewer - the person's id, without `human:`.
  * @param date - today, `YYYY-MM-DD`.
@@ -273,11 +308,13 @@ export function markReviewed(source: string, reviewer: string, date: string, sta
   // Rewrite as a block list, keeping every earlier entry.
   const earlier = before === undefined ? [] : verifiedEntries(before).filter(item => item.by !== undefined || item.at !== undefined)
   const verified = ['verified:', ...[...earlier, entry].flatMap(item => [`  - by: ${item.by ?? '?'}`, ...item.at === undefined ? [] : [`    at: ${item.at}`]])]
+  const tags = tagsIn(page.block)
+  const kept = tags.filter(tag => tag !== REVIEW_TAG)
   return joinPage({
     ...page,
-    block: setKeys(page.block, {
+    block: setKeys(dropKeys(page.block, ['lifecycle']), {
       status: ['status: stable'],
-      lifecycle: ['lifecycle: active'],
+      ...kept.length === tags.length ? {} : { tags: [`tags: [${kept.join(', ')}]`] },
       updated: [`updated: ${date}`],
       stale_after: [`stale_after: ${staleAfter}`],
       verified,
