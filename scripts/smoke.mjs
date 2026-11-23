@@ -62,7 +62,7 @@ write(remoteA, {
   'docs/kb/index.md': '---\nokf_version: "0.2"\n---\n\n# Bundle Index\n\n* [Alpha](concepts/alpha.md) - The alpha concept.\n',
   'docs/kb/log.md': '# Log\n\n## 2026-10-01\n* **Creation**: seeded.\n',
   'docs/kb/concepts/alpha.md': [
-    '---', 'type: Concept', 'title: Alpha Widget', 'description: What an alpha widget is.', 'status: stable', 'lifecycle: active',
+    '---', 'type: Concept', 'title: Alpha Widget', 'description: What an alpha widget is.', 'status: stable',
     'updated: 2026-10-01', 'tags: [widgets, core]', 'sources:', '  - resource: /sources/x.md', '    id: x', '---', '',
     '# Alpha Widget', '', 'An alpha widget **rotates** the `gearbox`. See [Beta](/concepts/beta.md) and [Gamma](../entities/gamma.md).', '',
     '<script>alert(1)</script>', '', '[evil](javascript:alert(1)) and [site](https://example.com)', '',
@@ -166,7 +166,7 @@ check(summary.pages.length === 6, `summary pages ${String(summary.pages?.length)
 check(summary.types.Concept === 2 && summary.types.Schema === 1 && summary.states.active === 1 && summary.states.deprecated === 1, `summary counts ${JSON.stringify(summary.types)} ${JSON.stringify(summary.states)}`)
 check(JSON.stringify(summary.untyped) === '["entities/gamma.md"]', `untyped ${JSON.stringify(summary.untyped)}`)
 const alpha = summary.pages.find(page => page.path === 'concepts/alpha.md')
-check(alpha?.title === 'Alpha Widget' && alpha.tags.join(',') === 'widgets,core' && alpha.lifecycle === 'active', `alpha summary ${JSON.stringify(alpha)}`)
+check(alpha?.title === 'Alpha Widget' && alpha.tags.join(',') === 'widgets,core' && alpha.stage === 'active', `alpha summary ${JSON.stringify(alpha)}`)
 check(summary.pages.find(page => page.path === 'index.md')?.reserved === true, 'index.md must be reserved')
 answer = await api('/api/okf/page', { query: { id: 'alpha-kb', path: '/concepts/alpha.md' } })
 check(answer.status === 200 && answer.body.meta.title === 'Alpha Widget' && answer.body.body.includes('rotates'), 'page read')
@@ -280,7 +280,7 @@ await api('/api/okf/session', { method: 'POST', body: { sessionId: 's-ro', bundl
 await new Promise((resolve) => { setTimeout(resolve, 50) })
 const agentAt = (id, cwd) => ({ id, session: { header: { id, cwd } } })
 text = contexts[0].text({ agent: agentAt('s-edit', editWs) })
-check(text.includes('You may edit this bundle') && text.includes('log.md') && text.includes('needs_review') && text.includes('being edited') && !text.includes('overwritten by the next update') && !text.includes('Do not edit'), `editable context ${text.slice(0, 900)}`)
+check(text.includes('You may edit this bundle') && text.includes('log.md') && text.includes('needs-review') && text.includes('never add a lifecycle key') && text.includes('being edited') && !text.includes('overwritten by the next update') && !text.includes('Do not edit'), `editable context ${text.slice(0, 900)}`)
 text = contexts[0].text({ agent: agentAt('s-edit', join(work, 'elsewhere')) })
 check(text.includes('Do not edit the bundle from this session') && text.includes(editWs) && !text.includes('You may edit'), 'an editable bundle is read-only outside its own workspace')
 text = contexts[0].text({ agent: agentAt('s-ro', editWs) })

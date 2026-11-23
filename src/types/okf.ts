@@ -64,7 +64,8 @@ export interface PageSummary {
   readonly title: string
   readonly description?: string
   readonly status?: string
-  readonly lifecycle?: string
+  /** The lifecycle stage read off `status`, the `needs-review` tag and the folder (see host/stage.ts). */
+  readonly stage?: string
   readonly updated?: string
   readonly tags: readonly string[]
   /** True for index.md and log.md, which OKF reserves. */
@@ -80,7 +81,7 @@ export interface BundleSummary {
   readonly pages: readonly PageSummary[]
   /** Count of pages per `type`. */
   readonly types: Readonly<Record<string, number>>
-  /** Count of pages per `lifecycle` (or `status` when there is no lifecycle). */
+  /** Count of pages per stage (or `status` when no stage can be read). */
   readonly states: Readonly<Record<string, number>>
   /** Non-reserved pages without a `type`, which OKF requires. */
   readonly untyped: readonly string[]
@@ -255,7 +256,8 @@ export interface WikiPage {
   readonly path: string
   readonly title: string
   readonly type?: string
-  readonly lifecycle?: string
+  /** The lifecycle stage (see host/stage.ts). */
+  readonly stage?: string
   readonly review: 'reviewed' | 'unreviewed'
   readonly reviewer?: string
   readonly reviewedAt?: string

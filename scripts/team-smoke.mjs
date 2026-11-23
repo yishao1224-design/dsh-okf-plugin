@@ -195,7 +195,7 @@ check(text.includes('Do not edit the bundle from this session') && !text.include
 const today = new Date().toISOString().slice(0, 10)
 const page = [
   '---', 'type: Concept', 'title: Release Process', 'description: How the team ships a service to staging and production.',
-  'status: draft', 'lifecycle: draft', `created: ${today}`, `updated: ${today}`, 'generated:', '  by: dsh/smoke', `  at: ${today}`, 'tags: []', '---', '',
+  'status: draft', `created: ${today}`, `updated: ${today}`, 'generated:', '  by: dsh/smoke', `  at: ${today}`, 'tags: []', '---', '',
   '# Release Process', '', 'Verify on staging first. See [the lifecycle](/concepts/knowledge-lifecycle.md) and [OKF](/concepts/open-knowledge-format.md).', '',
 ].join('\n')
 writeFileSync(join(ws, 'okf', 'payments', 'concepts', 'release-process.md'), page)
@@ -235,7 +235,7 @@ check(changes.files.some(file => file.path.endsWith('knowledge-lifecycle.md') &&
 pr = must(await api('/api/okf/team/open-pr', { method: 'POST', body: { id: record.id } }), 'open-pr 2')
 check(pr.stamped.join() === 'concepts/knowledge-lifecycle.md' && pr.eligible === false && pr.reasons.some(reason => reason.includes('alice reviewed')) && pr.pr?.reused === true && pr.pr.number === 1, `pr 2: ${JSON.stringify(pr)}`)
 const reset = readFileSync(lifecycle, 'utf8')
-check(/^lifecycle: draft$/m.test(reset) && /by: dsh\/smoke/.test(reset) && reset.includes('human:alice'), 'the edited reviewed page is an unreviewed draft that keeps its history')
+check(/^status: draft$/m.test(reset) && !/^lifecycle:/m.test(reset) && /by: dsh\/smoke/.test(reset) && reset.includes('human:alice'), 'the edited reviewed page is an unreviewed draft that keeps its history')
 check(!pulls[0].labels.includes('wiki-auto-merge') && pulls[0].body.includes('Needs a person'), 'the auto-merge label comes off')
 check(pulls[0].title === 'Add the release process page', `an update without a title keeps the pull request's title: ${pulls[0].title}`)
 git(clone, 'fetch', '-q', 'origin')
@@ -246,7 +246,7 @@ check(list.pulls[0].eligible === false && list.pulls[0].reasons.some(reason => r
 
 // ── Lint failure: nothing is committed ──
 const head = git(ws, 'rev-parse', 'HEAD')
-writeFileSync(join(ws, 'okf', 'payments', 'concepts', 'broken.md'), '---\ntype: Entity\ntitle: Broken\ndescription: d\nstatus: draft\nlifecycle: draft\nupdated: 2026-11-19\n---\nbody\n')
+writeFileSync(join(ws, 'okf', 'payments', 'concepts', 'broken.md'), '---\ntype: Entity\ntitle: Broken\ndescription: d\nstatus: draft\nupdated: 2026-11-19\n---\nbody\n')
 answer = await api('/api/okf/team/open-pr', { method: 'POST', body: { id: record.id } })
 check(answer.status === 422 && answer.body.error.code === 'lint-failed' && git(ws, 'rev-parse', 'HEAD') === head, `lint failure: ${JSON.stringify(answer.body).slice(0, 300)}`)
 rmSync(join(ws, 'okf', 'payments', 'concepts', 'broken.md'))

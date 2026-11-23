@@ -693,7 +693,7 @@ function PageList({ pages, t, empty, onMark }: { readonly pages: readonly WikiPa
               {page.review === 'reviewed'
                 ? <span style={sx('badge', 'badgeOk')}>{t('team.reviewedBy', { who: page.reviewer ?? '?', at: page.reviewedAt ?? '?' })}</span>
                 : <span style={sx('badge', 'badgeWarn')}>{page.generatedBy === undefined ? t('team.unreviewed') : t('team.unreviewedBy', { who: page.generatedBy, at: page.generatedAt ?? '?' })}</span>}
-              {page.overdue && <span style={sx('badge', 'badgeError')}>{page.lifecycle === 'needs_review' ? 'needs_review' : t('team.stale', { at: page.staleAfter ?? '?' })}</span>}
+              {page.overdue && <span style={sx('badge', 'badgeError')}>{page.stage === 'needs_review' ? 'needs review' : t('team.stale', { at: page.staleAfter ?? '?' })}</span>}
             </div>
             <div style={st('twMono')}>{page.path}{page.type === undefined ? '' : ` · ${page.type}`}</div>
           </div>

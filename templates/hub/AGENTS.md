@@ -8,7 +8,7 @@ are pointed here by that repository's own AGENTS.md.
 
 1. Find the project in the registry, then read `<Bundle>/index.md` and the pages it lists.
 2. Follow `<Bundle>/SCHEMA.md` when writing pages. Every page an agent writes
-   is an unreviewed draft (`status: draft`, `lifecycle: draft`, `generated: { by, at }`).
+   is an unreviewed draft (`status: draft`, `generated: { by, at }`; there is no `lifecycle` key).
    Never write `verified` entries or `human:` reviewers; a person adds those.
 3. Never edit anything under a bundle's `sources/`; capture a new dated file instead.
 4. Run `python scripts/okf.py lint --bundle <Bundle>` before proposing a change.
