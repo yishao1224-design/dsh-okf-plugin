@@ -1191,13 +1191,13 @@ export function openTeam(options: TeamOptions): Team {
     const id = `${seg}-${stamp()}-${suffix}`
     const branch = isNew ? `wiki/new-${seg}-${suffix}` : `wiki/${seg}-${stamp().replace('-', '')}-${suffix}`
     await mkdir(workDir, { recursive: true })
-    const target = workspaceDirOf(folder)
+    let target = workspaceDirOf(folder)
     const busy = data.maintains.find(record => record.closed === undefined && record.workspace === canonical(target))
     if (busy !== undefined) throw new LibraryError('busy', `${busy.wiki} is still being maintained in ${target}.`, 409)
     let reused = false
     if (await exists(join(target, '.git'))) {
       const url = await git(target, ['config', '--get', 'remote.origin.url']).catch(() => '')
-      if (url === team.url) {
+      if (sameRemote(url, team.url)) {
         try {
           await git(target, ['fetch', '--quiet', '--prune', 'origin', `+refs/heads/${base}:refs/remotes/origin/${base}`], token)
           if (await git(target, ['status', '--porcelain']) !== '') {
@@ -1211,8 +1211,10 @@ export function openTeam(options: TeamOptions): Team {
           throw new LibraryError('reset-failed', `Could not bring ${target} up to ${base}: ${(error as Error).message}`)
         }
       } else {
-        // A folder of another hub: set it aside, never delete it.
-        await rename(target, `${target}-old-${stamp()}-${suffix}`)
+        // A folder of another hub (or one whose remote cannot be read): set it aside, never delete it.
+        // On Windows a folder that a session, an editor or a process still has open cannot be
+        // renamed (EBUSY); then this round uses a fresh folder next to it and leaves it alone.
+        if (!(await renameUnlessLocked(target, `${target}-old-${stamp()}-${suffix}`))) target = `${target}-${stamp()}-${suffix}`
       }
     }
     if (!reused) {
@@ -1688,15 +1690,67 @@ export function openTeam(options: TeamOptions): Team {
     const data = await load()
     if (data.team === undefined) return undefined
     const here = fold(canonical(path))
+    const inside = (dir: string): boolean => {
+      const root = fold(canonical(dir))
+      return here === root || here.startsWith(`${root}${sep}`)
+    }
+    // An open round may sit in a fallback folder (see newWorkspace); it wins over the usual one.
+    const open = data.maintains.find(record => record.closed === undefined && inside(record.workspace))
+    if (open !== undefined) return open.wiki
     const folders = new Set([...(await projectsIn(mainDir, data.team)).map(project => project.folder), ...data.maintains.map(record => record.wiki)])
     for (const folder of folders) {
-      const dir = fold(canonical(workspaceDirOf(folder)))
-      if (here === dir || here.startsWith(`${dir}${sep}`)) return folder
+      if (inside(workspaceDirOf(folder))) return folder
     }
     return undefined
   }
 
   return { status, connect, refresh, wiki, pulls, create, maintain: openRound, changes, openPr, attach, publish, setupHub, initialize, sync, review, wikiAt }
+}
+
+/**
+ * Whether two remote URLs name the same repository: the same after dropping
+ * a user name (Azure DevOps clone URLs carry `org@`), a trailing `.git` or
+ * slash, and the case of the host (and, on Azure DevOps, of the whole path,
+ * which it treats case-insensitively).
+ * @param a - one URL.
+ * @param b - the other.
+ * @returns whether they match.
+ */
+export function sameRemote(a: string, b: string): boolean {
+  const norm = (value: string): string => {
+    const text = value.trim()
+    try {
+      const url = new URL(text)
+      const host = url.hostname.toLowerCase()
+      const path = decodeURIComponent(url.pathname).replace(/\/+$/, '').replace(/\.git$/, '')
+      const azure = host === 'dev.azure.com' || host.endsWith('.visualstudio.com')
+      return `${url.protocol}//${host}${url.port === '' ? '' : `:${url.port}`}${azure ? path.toLowerCase() : path}`
+    } catch {
+      const scp = /^(?:[\w.-]+@)?([\w.-]+):(.+)$/.exec(text)
+      return scp === null ? text : `${(scp[1] ?? '').toLowerCase()}:${(scp[2] ?? '').replace(/\/+$/, '').replace(/\.git$/, '')}`
+    }
+  }
+  return a.trim() !== '' && norm(a) === norm(b)
+}
+
+/**
+ * Rename a folder, retrying briefly while Windows reports it in use.
+ * @param from - the folder.
+ * @param to - the new name.
+ * @returns false when it stayed locked (EBUSY, EPERM or EACCES after the retries).
+ * @throws {Error} any other failure.
+ */
+async function renameUnlessLocked(from: string, to: string): Promise<boolean> {
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      await rename(from, to)
+      return true
+    } catch (error) {
+      if (!['EBUSY', 'EPERM', 'EACCES'].includes(String((error as NodeJS.ErrnoException).code))) throw error
+      if (attempt >= 4) return false
+      await new Promise((done) => { setTimeout(done, 250) })
+    }
+  }
 }
 
 /**
