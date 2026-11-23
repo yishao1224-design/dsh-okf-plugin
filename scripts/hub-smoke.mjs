@@ -60,6 +60,7 @@ git(seed, 'add', '-A')
 git(seed, 'commit', '-qm', 'seed hub')
 const origin = join(work, 'origin.git')
 const emptyOrigin = join(work, 'empty.git')
+const plainOrigin = join(work, 'plain.git')
 git(work, 'clone', '-q', '--bare', seed, origin)
 git(origin, 'symbolic-ref', 'HEAD', 'refs/heads/main')
 
@@ -94,9 +95,9 @@ const server = createServer((request, response) => {
     const url = new URL(request.url ?? '/', 'http://x')
     seen.push(`${request.method} ${url.pathname}`)
     const send = (status, value) => { response.writeHead(status, { 'content-type': 'application/json' }); response.end(JSON.stringify(value)) }
-    const repoName = url.pathname.startsWith('/api/v3/repos/acme/empty/') ? 'empty' : 'hub'
+    const repoName = url.pathname.startsWith('/api/v3/repos/acme/empty/') ? 'empty' : url.pathname.startsWith('/api/v3/repos/acme/plain/') ? 'plain' : 'hub'
     const base = `/api/v3/repos/acme/${repoName}`
-    const bare = repoName === 'empty' ? emptyOrigin : origin
+    const bare = repoName === 'empty' ? emptyOrigin : repoName === 'plain' ? plainOrigin : origin
     const json = body === '' ? {} : JSON.parse(body)
     const view = pull => ({ number: pull.number, title: pull.title, html_url: `${URL_}/pull/${String(pull.number)}`, draft: false, updated_at: '2026-11-19T08:00:00Z', user: { login: 'dsh-bot' }, head: { ref: pull.head, sha: git(bare, 'rev-parse', `refs/heads/${pull.head}`) }, base: { ref: pull.base }, labels: pull.labels.map(name => ({ name })), state: pull.state, merged: pull.merged === true })
     if (request.method === 'GET' && url.pathname === '/api/v3/user') return send(200, { login: 'alice-gh' })
@@ -432,6 +433,28 @@ check(git(round2.workspace, 'rev-parse', 'HEAD') === git(emptyOrigin, 'rev-parse
 check(!existsSync(join(round2.workspace, 'payments', 'scratch.md')) && git(round2.workspace, 'stash', 'list').includes('dsh-okf: left over on'), 'leftovers are stashed, not lost')
 const again2 = must(await api('/api/okf/team/maintain', { method: 'POST', body: { folder: 'payments' } }), 'maintain again')
 check(again2.created === false && again2.record.id === round2.record.id, 'an open round is reused')
+
+// ── A hub made by hand, without scripts/okf.py: New project wiki brings the toolchain ──
+{
+  const plainSeed = join(work, 'plain-seed')
+  mkdirSync(plainSeed)
+  writeFileSync(join(plainSeed, 'AGENTS.md'), '# Team hub\n')
+  writeFileSync(join(plainSeed, 'README.md'), '# Team hub\n')
+  git(plainSeed, 'init', '-q')
+  git(plainSeed, 'add', '-A')
+  git(plainSeed, 'commit', '-qm', 'hand-made hub')
+  git(work, 'clone', '-q', '--bare', plainSeed, plainOrigin)
+  const PLAIN_URL = 'https://github.acme.com/acme/plain'
+  process.env.GIT_CONFIG_COUNT = '5'
+  process.env.GIT_CONFIG_KEY_4 = `url.${pathToFileURL(plainOrigin).href}.insteadOf`
+  process.env.GIT_CONFIG_VALUE_4 = PLAIN_URL
+  must(await api('/api/okf/team/connect', { method: 'POST', body: { url: PLAIN_URL, ref: 'main' } }), 'connect a hub without the toolchain')
+  const made = must(await api('/api/okf/team/create', { method: 'POST', body: { name: 'Translation Hub' } }), 'create in a hub without the toolchain')
+  const schema = readFileSync(join(made.workspace, 'translation-hub', 'SCHEMA.md'), 'utf8')
+  check(schema.includes('# Type registry') && schema.includes('wiki_name: "Translation Hub"') && existsSync(join(made.workspace, 'translation-hub', 'concepts')), `the full starter schema, not the stub: ${schema.slice(0, 400)}`)
+  check(made.pr?.files.includes('scripts/okf.py') && made.pr.files.includes('translation-hub/SCHEMA.md') && made.pr.eligible === false && made.pr.notes.some(note => note.includes('adds the plugin\'s copy')), `the setup pull request carries the toolchain: ${JSON.stringify(made.pr ?? made.prError)}`)
+  check(!made.pr?.notes.some(note => note.includes('is not in the repository')), 'lint and index ran')
+}
 
 server.close()
 rmSync(work, { recursive: true, force: true })
