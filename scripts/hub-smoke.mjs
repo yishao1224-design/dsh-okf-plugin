@@ -17,7 +17,7 @@
  * Needs a knowledgeAgent checkout (see team-smoke.mjs). Usage: node scripts/hub-smoke.mjs
  */
 import { execFileSync, spawnSync } from 'node:child_process'
-import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { createServer } from 'node:http'
 import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
@@ -458,6 +458,7 @@ check(again2.created === false && again2.record.id === round2.record.id, 'an ope
 // A round in a hub whose base branch has no scripts/okf.py: the workspace gets it when the round opens.
 {
   const plainRound = join(work, 'plain-round')
+  const teamDir = join(libraryDir, 'team')
   mkdirSync(plainRound)
   writeFileSync(join(plainRound, 'AGENTS.md'), '# Team hub\n\n| Project | Bundle |\n|---|---|\n| Glossary | `glossary/` |\n')
   cpSync(join(fixture, 'okf'), join(plainRound, 'glossary'), { recursive: true })
@@ -466,8 +467,14 @@ check(again2.created === false && again2.record.id === round2.record.id, 'an ope
   git(plainRound, 'commit', '-qm', 'hand-made hub with a wiki')
   git(plainRound, 'push', '-q', '--force', plainOrigin, 'HEAD:main')
   must(await api('/api/okf/team/refresh', { method: 'POST', body: {} }), 'refresh the hand-made hub')
+  // A workspace left from before whose origin is spelled a little differently (a trailing slash)
+  // is the same hub: it is reused, not renamed aside (a rename fails on Windows while it is open).
+  const leftover = join(teamDir, 'work', 'glossary')
+  git(join(teamDir, 'work'), 'clone', '-q', plainOrigin, leftover)
+  git(leftover, 'remote', 'set-url', 'origin', 'https://github.acme.com/acme/plain/')
   const round = must(await api('/api/okf/team/maintain', { method: 'POST', body: { folder: 'glossary' } }), 'maintain in a hub without the toolchain')
   check(existsSync(join(round.workspace, 'scripts', 'okf.py')), `the round's workspace has scripts/okf.py: ${round.workspace}`)
+  check(realpathSync.native(round.workspace) === realpathSync.native(leftover) && !readdirSync(join(teamDir, 'work')).some(name => name.startsWith('glossary-old-')), `the leftover workspace is reused, not set aside: ${round.workspace} ${readdirSync(join(teamDir, 'work')).join(', ')}`)
 }
 
 server.close()
