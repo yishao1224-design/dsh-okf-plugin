@@ -17,6 +17,10 @@ import type { BundleSummary, LibraryEntry, PageContent, PageSummary } from '../t
 export const RESERVED = new Set(['index.md', 'log.md'])
 /** Folders never walked. */
 const SKIP = new Set(['.git', 'node_modules', '.obsidian', '.github', '.claude', '.vscode'])
+/** In a bundle that is its project's root: the toolchain's folders, never pages (okf.py's NON_BUNDLE_DIRS). */
+const ROOT_TOOL_DIRS = new Set(['scripts', 'skills', 'dist', '__pycache__'])
+/** In a bundle that is its project's root: project files beside the pages (okf.py's ROOT_PROJECT_FILES). */
+const ROOT_PROJECT_FILES = new Set(['AGENTS.md', 'CLAUDE.md', 'README.md', 'CONTRIBUTING.md', 'CHANGELOG.md', 'LICENSE.md'])
 /** The most pages one summary lists. */
 export const PAGE_CAP = 5000
 /** The largest page served whole. */
@@ -89,7 +93,10 @@ export async function findLocalBundleRoots(dir: string, depth = 3): Promise<stri
 async function markdownFiles(root: string): Promise<{ files: string[], truncated: boolean }> {
   const files: string[] = []
   let truncated = false
+  // A bundle that is its project's root carries the toolchain beside the pages (okf.py's root-bundle rule).
+  const projectRoot = await stat(join(root, 'scripts', 'okf.py')).then(info => info.isFile(), () => false)
   const walk = async (current: string): Promise<void> => {
+    const top = current === root
     const entries = await readdir(current, { withFileTypes: true })
     for (const entry of entries) {
       if (files.length >= PAGE_CAP) {
@@ -97,8 +104,8 @@ async function markdownFiles(root: string): Promise<{ files: string[], truncated
         return
       }
       if (entry.isDirectory()) {
-        if (!SKIP.has(entry.name) && !entry.name.startsWith('.')) await walk(join(current, entry.name))
-      } else if (entry.isFile() && entry.name.toLowerCase().endsWith('.md')) {
+        if (!SKIP.has(entry.name) && !entry.name.startsWith('.') && !(projectRoot && top && ROOT_TOOL_DIRS.has(entry.name))) await walk(join(current, entry.name))
+      } else if (entry.isFile() && entry.name.toLowerCase().endsWith('.md') && !(projectRoot && top && ROOT_PROJECT_FILES.has(entry.name))) {
         files.push(relative(root, join(current, entry.name)).split(sep).join('/'))
       }
     }
