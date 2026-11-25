@@ -41,7 +41,7 @@ import type { Library } from './host/library.ts'
 import { pickFolder } from './host/picker.ts'
 import { bundledSkills, skillProvider } from './host/skills.ts'
 import { RunError } from './host/run.ts'
-import { isEmptyFolder } from './host/starter.ts'
+import { findSkill, isEmptyFolder } from './host/starter.ts'
 import { openTeam } from './host/team.ts'
 import { wikiTools } from './host/tools.ts'
 import type { Team } from './host/team.ts'
@@ -473,6 +473,12 @@ export function apply(ctx: HostContext, config: Config | null | undefined = {}):
   // The kb-* skills beside the built module, once DSH's skill registry has taken them.
   const skillsRoot = fileURLToPath(new URL('../skills/', import.meta.url))
   let skillsServed = false
+  // DSH's filesystem skill provider order after the project roots (a new folder has none).
+  const skillRoots = [...settings.skillDirs ?? [], join(dshHome(), 'skills'), join(agentsHome(), 'skills')]
+  const bundledSkill = async (name: string): Promise<string | undefined> => {
+    if (!skillsServed) return undefined
+    return (await bundledSkills(skillsRoot)).find(skill => skill.name === name && skill.invocation.userInvocable)?.file
+  }
   const library = openLibrary({
     dir: settings.libraryDir ?? join(dshHome(), 'okf'),
     ...settings.gitPath === undefined ? {} : { gitPath: settings.gitPath },
@@ -481,19 +487,23 @@ export function apply(ctx: HostContext, config: Config | null | undefined = {}):
     // An empty local folder gets the same toolchain Set up the hub writes.
     okfScript: fileURLToPath(new URL('../templates/hub/scripts/okf.py', import.meta.url)),
     setupSkill: settings.setupSkill ?? 'kb-setup',
-    // DSH's filesystem skill provider order after the project roots (a new folder has none).
-    skillRoots: [...settings.skillDirs ?? [], join(dshHome(), 'skills'), join(agentsHome(), 'skills')],
-    bundledSkill: async (name) => {
-      if (!skillsServed) return undefined
-      return (await bundledSkills(skillsRoot)).find(skill => skill.name === name && skill.invocation.userInvocable)?.file
-    },
+    skillRoots,
+    bundledSkill,
   })
   const knowledge = {
     indexChars: count(settings.indexChars, 8000, 'indexChars'),
     agentActor: settings.team?.agentActor ?? 'dsh/agent',
   }
   const teamRow = settings.team ?? {}
+  // The setup skill DSH can run now: a copy in a skill folder, else the one this plugin serves.
+  const setupSkill = settings.setupSkill ?? 'kb-setup'
+  const resolveSetupSkill = async (): Promise<string | undefined> => {
+    if (setupSkill === '') return undefined
+    const found = await findSkill(setupSkill, skillRoots) ?? await bundledSkill(setupSkill)
+    return found === undefined ? undefined : setupSkill
+  }
   const team = openTeam({
+    setupSkill: resolveSetupSkill,
     dir: join(library.dir, 'team'),
     library,
     git: settings.gitPath ?? 'git',

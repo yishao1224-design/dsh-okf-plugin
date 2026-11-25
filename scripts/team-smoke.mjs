@@ -126,7 +126,7 @@ const libraryDir = join(work, 'library')
 host.apply({
   connection: { fetch: { register: (route) => { routes.set(route.path, route); return async () => {} } } },
   inject: (_deps, callback) => { callback({ systemPrompt: { context: (c) => { contexts.push(c); return () => {} } }, tools: { register: () => () => {} } }) },
-}, { libraryDir, team: { githubApi, python, agentActor: 'dsh/smoke' } })
+}, { libraryDir, skills: false, team: { githubApi, python, agentActor: 'dsh/smoke' } })
 
 async function api(path, { method = 'GET', query, body } = {}) {
   const route = routes.get(path)
@@ -135,6 +135,19 @@ async function api(path, { method = 'GET', query, body } = {}) {
   const response = await route.fetch(new Request(url, { method, ...body === undefined ? {} : { body: JSON.stringify(body), headers: { 'content-type': 'application/json' } } }))
   const text = await response.text()
   return { status: response.status, body: text === '' ? null : JSON.parse(text) }
+}
+
+/**
+ * New project wiki, then Open pull request, as a person does: create opens no pull request itself.
+ * @param body - the create request.
+ * @param label - for failures.
+ * @returns the create answer, with `pr` (the open-pr answer) or `prError`.
+ */
+async function createWiki(body, label) {
+  const made = must(await api('/api/okf/team/create', { method: 'POST', body }), label)
+  check(made.pr === undefined && made.prError === undefined, `${label}: New project wiki opens no pull request by itself`)
+  const opened = await api('/api/okf/team/open-pr', { method: 'POST', body: { id: made.record.id } })
+  return opened.status === 200 ? { ...made, pr: opened.body } : { ...made, prError: opened.body.error.message }
 }
 const must = (answer, label) => {
   if (answer.status !== 200) {
@@ -255,7 +268,7 @@ git(ws, 'checkout', '-q', '--', 'okf/payments')
 // ── New project wiki ──
 answer = await api('/api/okf/team/create', { method: 'POST', body: { name: 'Payments', folder: 'payments' } })
 check(answer.status === 409 && answer.body.error.code === 'exists', 'an existing folder is refused')
-const created = must(await api('/api/okf/team/create', { method: 'POST', body: { name: 'Settlement Wiki', folder: 'settlement', template: 'copy:okf/payments' } }), 'create')
+const created = await createWiki({ name: 'Settlement Wiki', folder: 'settlement', template: 'copy:okf/payments' }, 'create')
 const nws = created.workspace
 check(created.record.isNew === true && /^wiki\/new-settlement-[0-9a-f]{4}$/.test(created.record.branch) && created.record.wiki === 'okf/settlement' && created.entry.root === join(nws, 'okf', 'settlement'), `create: ${JSON.stringify(created.record)}`)
 check(created.prError === undefined && created.pr?.pr?.number === 2 && created.pr.eligible === false && created.pr.reasons.some(reason => reason.includes('SCHEMA.md')), `setup PR: ${JSON.stringify(created.pr ?? created.prError)}`)
