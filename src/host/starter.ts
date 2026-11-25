@@ -5,14 +5,18 @@
  * The layout is the one knowledgeAgent uses, so every kb-* skill and
  * `okf.py` command works there unchanged:
  *
- *     <folder>/
+ *     <folder>/            the folder IS the bundle (no okf/ subfolder):
+ *       SCHEMA.md index.md log.md
+ *       concepts/ entities/ comparisons/ queries/ archive/ sources/
+ *       scripts/okf.py     the plugin's own copy of the toolchain
  *       AGENTS.md          how an agent works in this knowledge base
  *       .gitignore
- *       scripts/okf.py     the plugin's own copy of the toolchain
- *       okf/               the bundle: SCHEMA.md, index.md, log.md and
- *                          concepts/ entities/ comparisons/ queries/ archive/ sources/
  *
- * `python scripts/okf.py init` writes the bundle when Python is available.
+ * okf.py (2026.11.25+) treats a project root holding SCHEMA.md as the bundle
+ * and skips `scripts/`, hidden folders and AGENTS.md there, so every kb-*
+ * skill and `okf.py` command works with no `--bundle` flag.
+ *
+ * `python scripts/okf.py init --bundle .` writes the bundle when Python is available.
  * Without Python the same skeleton is written here, so the folder is still a
  * valid OKF v0.2 bundle; `okf.py` can run later. The folder becomes a git
  * repository (no commit) when git is available, so it is a workspace the
@@ -22,7 +26,7 @@
  * When DSH can see a setup skill (`kb-setup` from knowledgeAgent, by default),
  * in one of its user skill folders or as one this plugin ships (see
  * `skills.ts`), the plugin hands setup to that skill
- * instead: it only makes the folder a git repository with an empty `okf/`, and
+ * instead: it only makes the folder a git repository, and
  * answers the `/kb-setup` prompt the new session's composer is prefilled with.
  * The person presses send and the agent sets the bundle up in front of them.
  */
@@ -33,8 +37,6 @@ import { run } from './run.ts'
 /** Entries an empty folder may still hold: OS litter and an empty git repository. */
 const IGNORABLE = new Set(['.git', '.ds_store', 'thumbs.db', 'desktop.ini'])
 
-/** The bundle folder inside a new knowledge base. */
-export const STARTER_BUNDLE = 'okf'
 
 /** The bundle subfolders `okf.py init` makes. */
 const BUNDLE_DIRS = ['concepts', 'entities', 'comparisons', 'queries', 'archive', 'sources']
@@ -84,7 +86,7 @@ export async function findSkill(name: string, roots: readonly string[]): Promise
  * @returns the prompt.
  */
 export function setupPrompt(skill: string): string {
-  return `/${skill} Set up the new knowledge base in this folder. Use the default bundle folder ${STARTER_BUNDLE}/ (it exists and is empty); do not ask for another name.`
+  return `/${skill} Set up the new knowledge base with this folder itself as the bundle (python scripts/okf.py init --bundle .): SCHEMA.md, index.md and log.md at the top level, no subfolder. Do not ask for a bundle name.`
 }
 
 /** What the starter needs. */
@@ -148,19 +150,20 @@ function agentsText(name: string): string {
   return [
     `# ${name}`,
     '',
-    `A knowledge base kept as an OKF v0.2 bundle in \`${STARTER_BUNDLE}/\`.`,
+    'A knowledge base kept as an OKF v0.2 bundle: this folder is the bundle.',
     '',
     '## Before writing',
     '',
-    `1. Read \`${STARTER_BUNDLE}/SCHEMA.md\`: page types, tags and the frontmatter template.`,
-    `2. Read \`${STARTER_BUNDLE}/index.md\` so you update an existing page instead of writing a duplicate.`,
-    `3. Read the newest entries of \`${STARTER_BUNDLE}/log.md\`.`,
+    '1. Read `SCHEMA.md`: page types, tags and the frontmatter template.',
+    '2. Read `index.md` so you update an existing page instead of writing a duplicate.',
+    '3. Read the newest entries of `log.md`.',
     '',
     '## Rules',
     '',
     '- Every page has frontmatter with `type`, `title`, `description`, `status` (`draft | stable | deprecated`) and `updated`.',
     '  A stable page to re-check carries the `needs-review` tag; there is no other state field.',
-    `- Never edit files under \`${STARTER_BUNDLE}/sources/\` after they are captured.`,
+    '- Never edit files under `sources/` after they are captured.',
+    '- `scripts/`, this file and other hidden or tool folders are not pages.',
     '- Links are bundle-relative (`/concepts/foo.md`).',
     '- After editing, run `python scripts/okf.py links`, `index`, `log "<Verb>: message"` and `lint`, and fix what lint reports.',
     '',
@@ -206,13 +209,12 @@ function schemaText(date: string): string {
  * @returns where the bundle is and what ran.
  */
 export async function initKnowledgeBase(folder: string, name: string, options: StarterOptions): Promise<StarterResult> {
-  const root = join(folder, STARTER_BUNDLE)
+  const root = folder
   const skill = options.setupSkill === undefined || options.setupSkill === '' ? undefined : options.setupSkill
   // A copy in a skill folder wins in DSH, so it is looked for first; then the plugin's own.
   const skillFile = skill === undefined ? undefined : await findSkill(skill, options.skillRoots ?? []) ?? await options.bundledSkill?.(skill)
   if (skill !== undefined && skillFile !== undefined) {
-    // The skill lays down scripts/okf.py and the bundle itself; the entry needs its folder now.
-    await mkdir(root, { recursive: true })
+    // The skill lays down scripts/okf.py and the bundle itself.
     const gitInit = await gitInitOnce(folder, options)
     return { root, setup: 'skill', prompt: setupPrompt(skill), skillFile, gitInit }
   }
@@ -222,7 +224,7 @@ export async function initKnowledgeBase(folder: string, name: string, options: S
     await mkdir(join(folder, 'scripts'), { recursive: true })
     await copyFile(options.okfScript, script)
     try {
-      await run(options.python, [script, 'init', '--bundle', STARTER_BUNDLE], { cwd: folder, timeoutMs: options.timeoutMs })
+      await run(options.python, [script, 'init', '--bundle', '.'], { cwd: folder, timeoutMs: options.timeoutMs })
       toolchainRan = true
     } catch (error) {
       // init ends with a lint run; a non-zero lint still leaves the skeleton written.
