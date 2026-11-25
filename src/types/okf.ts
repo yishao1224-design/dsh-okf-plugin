@@ -295,6 +295,8 @@ export interface TeamStatus {
   readonly empty?: boolean
   readonly wikis: readonly ProjectWiki[]
   readonly maintains: readonly MaintainRecord[]
+  /** Rounds whose pull request merged or closed: a session still in one shows it as done. */
+  readonly finished?: readonly MaintainRecord[]
   /** Whether a token for the remote is set (pull requests need one). */
   readonly hasToken: boolean
 }

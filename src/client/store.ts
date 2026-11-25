@@ -533,6 +533,11 @@ export function createOkfStore(fetcher: Fetcher = (input, init) => globalThis.fe
       try {
         const data = await call<ChangesAnswer>(fetcher, ROUTES.teamChanges, { query: { id: maintainId }, timeoutMs: GIT_TIMEOUT_MS })
         setTeam({ changes: { ...state.team.changes, [maintainId]: { status: 'ready', data } } })
+        // Its pull request merged or closed since the status was read: show the round as done.
+        if (data.record.closed !== undefined && state.team.status.data?.maintains.some(record => record.id === maintainId) === true) {
+          setTeam({ wikis: {} })
+          void loadTeam()
+        }
       } catch (error) {
         setTeam({ changes: { ...state.team.changes, [maintainId]: failed(before, error) } })
       }
