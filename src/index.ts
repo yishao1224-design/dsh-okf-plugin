@@ -29,19 +29,21 @@
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { readPage, summarize } from './host/bundle.ts'
+import { findLocalBundleRoots, isBundleRoot, readPage, summarize } from './host/bundle.ts'
 import { GitError } from './host/git.ts'
 import { IndexCache, sessionContext } from './host/knowledge.ts'
 import { GitHubError } from './host/github.ts'
 import { LibraryError, openLibrary } from './host/library.ts'
 import type { Library } from './host/library.ts'
+import { pickFolder } from './host/picker.ts'
 import { RunError } from './host/run.ts'
+import { isEmptyFolder } from './host/starter.ts'
 import { openTeam } from './host/team.ts'
 import { wikiTools } from './host/tools.ts'
 import type { Team } from './host/team.ts'
 import type { HostContext } from './types/contract.ts'
 import { ROUTES } from './types/okf.ts'
-import type { AddLocalRequest, FetchRequest } from './types/okf.ts'
+import type { AddLocalRequest, FetchRequest, PickFolderAnswer } from './types/okf.ts'
 
 /** The Host service this half cannot work without. */
 export const inject = ['connection']
@@ -232,8 +234,18 @@ export const handlers: Readonly<Record<string, { methods: readonly ('GET' | 'POS
     methods: ['POST'],
     handle: route(['POST'], async (request, { library }) => {
       const record = await body(request)
-      const wanted: AddLocalRequest = { path: required(record, 'path'), ...optionalFields(record, ['id', 'name']) }
-      return json({ entry: await library.addLocal(wanted) })
+      const wanted: AddLocalRequest = { path: required(record, 'path'), ...optionalFields(record, ['id', 'name']), ...record.initialize === true ? { initialize: true } : {} }
+      return json(await library.addLocal(wanted))
+    }),
+  },
+  [ROUTES.pickFolder]: {
+    methods: ['POST'],
+    handle: route(['POST'], async (request) => {
+      const record = await body(request)
+      const start = optional(record, 'start')
+      const path = await pickFolder({ title: 'Choose the folder of an OKF bundle, or an empty folder for a new one', ...start === undefined ? {} : { start } })
+      if (path === null) return json({ path: null } satisfies PickFolderAnswer)
+      return json({ path, kind: await folderKind(path) } satisfies PickFolderAnswer)
     }),
   },
   [ROUTES.editWorkspace]: {
@@ -381,6 +393,20 @@ export const handlers: Readonly<Record<string, { methods: readonly ('GET' | 'POS
 }
 
 /**
+ * What a chosen folder holds, so the form can say what Add will do.
+ * @param path - an absolute folder.
+ * @returns bundle, empty, or other.
+ */
+async function folderKind(path: string): Promise<NonNullable<PickFolderAnswer['kind']>> {
+  try {
+    if (await isBundleRoot(path) || (await findLocalBundleRoots(path)).length > 0) return 'bundle'
+    return await isEmptyFolder(path) ? 'empty' : 'other'
+  } catch {
+    return 'other'
+  }
+}
+
+/**
  * Copy the optional string fields that are present.
  * @param record - the body.
  * @param keys - the fields.
@@ -420,6 +446,9 @@ export function apply(ctx: HostContext, config: Config | null | undefined = {}):
     dir: settings.libraryDir ?? join(dshHome(), 'okf'),
     ...settings.gitPath === undefined ? {} : { gitPath: settings.gitPath },
     gitTimeoutMs: count(settings.gitTimeoutMs, 300_000, 'gitTimeoutMs'),
+    python: settings.team?.python ?? (process.platform === 'win32' ? 'python' : 'python3'),
+    // An empty local folder gets the same toolchain Set up the hub writes.
+    okfScript: fileURLToPath(new URL('../templates/hub/scripts/okf.py', import.meta.url)),
   })
   const knowledge = {
     indexChars: count(settings.indexChars, 8000, 'indexChars'),

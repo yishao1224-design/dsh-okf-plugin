@@ -9,7 +9,7 @@
  */
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore, type CSSProperties, type ReactNode } from 'react'
 import type { Translate } from '../types/contract.ts'
-import type { BundleSummary, LibraryEntry, PageContent, PageSummary } from '../types/okf.ts'
+import type { BundleSummary, LibraryEntry, PageContent, PageSummary, PickFolderAnswer } from '../types/okf.ts'
 import type { OkfKey } from './locales.ts'
 import { renderMarkdown } from './markdown.tsx'
 import { ApiFailure, type OkfState, type OkfStore } from './store.ts'
@@ -286,21 +286,38 @@ function AddForm({ store, t, onDone }: { readonly store: OkfStore, readonly t: T
   const [path, setPath] = useState('')
   const [id, setId] = useState('')
   const [local, setLocal] = useState('')
+  // What the folder dialog found in the chosen folder; cleared when the path is typed.
+  const [picked, setPicked] = useState<PickFolderAnswer['kind']>(undefined)
+  const [picking, setPicking] = useState(false)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<ApiFailure | Error | undefined>(undefined)
 
   const submit = (override?: string): void => {
     setBusy(true)
     setError(undefined)
-    const work = tab === 'git'
+    const work: Promise<LibraryEntry> = tab === 'git'
       ? store.fetchBundle({ url, ...ref.trim() === '' ? {} : { ref: ref.trim() }, ...(override ?? path).trim() === '' ? {} : { path: (override ?? path).trim() }, ...id.trim() === '' ? {} : { id: id.trim() } })
-      : store.addLocal(override ?? local, id.trim() === '' ? undefined : id.trim())
+      // An empty folder becomes a new knowledge base, then opens as its editing workspace.
+      : store.addLocal(override ?? local, id.trim() === '' ? undefined : id.trim(), true).then(async (answer) => {
+          if (answer.created !== undefined) await store.editAsWorkspace(answer.entry.id).catch(() => undefined)
+          return answer.entry
+        })
     work.then((entry) => { setBusy(false); onDone(entry) }, (failure: unknown) => { setBusy(false); setError(failure as Error) })
+  }
+  const browse = (): void => {
+    setPicking(true)
+    setError(undefined)
+    store.pickFolder(local).then((answer) => {
+      setPicking(false)
+      if (answer.path === null) return
+      setLocal(answer.path)
+      setPicked(answer.kind)
+    }, (failure: unknown) => { setPicking(false); setError(failure as Error) })
   }
   const candidates = error instanceof ApiFailure && error.code === 'many-bundles'
     ? ((error.detail as { candidates?: unknown } | undefined)?.candidates as string[] | undefined) ?? []
     : []
-  const canSubmit = !busy && (tab === 'git' ? url.trim() !== '' : local.trim() !== '')
+  const canSubmit = !busy && !picking && (tab === 'git' ? url.trim() !== '' : local.trim() !== '')
 
   return (
     <form style={st('form')} onSubmit={(event) => { event.preventDefault(); if (canSubmit) submit() }}>
@@ -323,13 +340,17 @@ function AddForm({ store, t, onDone }: { readonly store: OkfStore, readonly t: T
         : (
             <>
               <label style={st('label')} htmlFor="okf-local">{t('add.localPath')}</label>
-              <input id="okf-local" style={st('input')} value={local} onChange={(event) => { setLocal(event.target.value) }} placeholder="D:\\repos\\project\\okf" spellCheck={false} autoFocus />
+              <div style={{ ...st('row'), flexWrap: 'nowrap' }}>
+                <input id="okf-local" style={{ ...st('input'), flex: 1, minWidth: 0 }} value={local} onChange={(event) => { setLocal(event.target.value); setPicked(undefined) }} placeholder="D:\\repos\\project\\okf" spellCheck={false} autoFocus />
+                <Button disabled={busy || picking} title={t('add.browseHint')} onClick={browse}>{picking ? t('add.browsing') : t('add.browse')}</Button>
+              </div>
+              <p style={st('note')}>{picked === 'empty' ? t('add.emptyPicked') : picked === 'other' ? t('add.otherPicked') : t('add.localHint')}</p>
             </>
           )}
       <label style={st('label')} htmlFor="okf-id">{t('add.id')}</label>
       <input id="okf-id" style={st('input')} value={id} onChange={(event) => { setId(event.target.value) }} spellCheck={false} />
       <div style={{ ...st('row'), marginTop: 10 }}>
-        <Button type="submit" variant="primary" disabled={!canSubmit}>{busy ? t('add.busy') : tab === 'git' ? t('add.submit') : t('add.submitLocal')}</Button>
+        <Button type="submit" variant="primary" disabled={!canSubmit}>{busy ? (tab === 'git' ? t('add.busy') : t('add.busyLocal')) : tab === 'git' ? t('add.submit') : picked === 'empty' ? t('add.submitCreate') : t('add.submitLocal')}</Button>
         <Button onClick={() => { onDone() }} disabled={busy}>{t('add.cancel')}</Button>
       </div>
       {error !== undefined && <div style={st('error')}>{error.message}</div>}
@@ -338,7 +359,7 @@ function AddForm({ store, t, onDone }: { readonly store: OkfStore, readonly t: T
           <p style={st('note')}>{t('add.pick')}</p>
           <div style={{ ...st('row'), marginTop: 4 }}>
             {candidates.map(candidate => (
-              <Button key={candidate} style={st('candidate')} onClick={() => { if (tab === 'git') setPath(candidate); else setLocal(candidate); submit(candidate) }}>{candidate === '' ? '/' : candidate}</Button>
+              <Button key={candidate} style={st('candidate')} onClick={() => { if (tab === 'git') setPath(candidate); else { setLocal(candidate); setPicked(undefined) } submit(candidate) }}>{candidate === '' ? '/' : candidate}</Button>
             ))}
           </div>
         </div>

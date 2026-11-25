@@ -8,8 +8,8 @@
  */
 import { relative, ROUTES } from '../types/okf.ts'
 import type {
-  BundleSummary, ChangesAnswer, EditWorkspaceAnswer, FetchRequest, LibraryEntry, MaintainAnswer, OpenPrAnswer, PageContent, PublishAnswer, ReviewAnswer, SyncAnswer,
-  PullsAnswer, SessionSelection, TeamStatus, WikiDetail,
+  AddLocalAnswer, BundleSummary, ChangesAnswer, EditWorkspaceAnswer, FetchRequest, LibraryEntry, MaintainAnswer, OpenPrAnswer, PageContent, PublishAnswer, ReviewAnswer, SyncAnswer,
+  PickFolderAnswer, PullsAnswer, SessionSelection, TeamStatus, WikiDetail,
 } from '../types/okf.ts'
 import type { LayoutService, UiWorkspaceService, WorkspacesService, WorkspaceView } from '../types/contract.ts'
 
@@ -17,6 +17,8 @@ import type { LayoutService, UiWorkspaceService, WorkspacesService, WorkspaceVie
 export const REQUEST_TIMEOUT_MS = 15_000
 /** Deadline for a clone or update, which can take a while on a big repository. */
 export const GIT_TIMEOUT_MS = 330_000
+/** Deadline for the folder dialog: a person is choosing (the Host gives up at 15 minutes). */
+export const PICK_TIMEOUT_MS = 16 * 60_000
 
 /** An error answer from the Host, or a transport failure. */
 export class ApiFailure extends Error {
@@ -199,7 +201,13 @@ export interface OkfStore {
   preview(bundleId: string | undefined): void
   openPage(pagePath: string | undefined): void
   fetchBundle(request: FetchRequest): Promise<LibraryEntry>
-  addLocal(path: string, id?: string): Promise<LibraryEntry>
+  /**
+   * Add a local folder. With `initialize`, an empty folder becomes a new
+   * knowledge base first (the answer's `created` is then set).
+   */
+  addLocal(path: string, id?: string, initialize?: boolean): Promise<AddLocalAnswer>
+  /** Open the system folder dialog on the Host's machine. */
+  pickFolder(start?: string): Promise<PickFolderAnswer>
   update(id: string, force?: boolean): Promise<{ entry: LibraryEntry, changed: boolean }>
   remove(id: string, deleteFiles: boolean): Promise<void>
   /**
@@ -432,11 +440,12 @@ export function createOkfStore(fetcher: Fetcher = (input, init) => globalThis.fe
       await refreshLibrary()
       return answer.entry
     },
-    async addLocal(path, id) {
-      const answer = await call<{ entry: LibraryEntry }>(fetcher, ROUTES.addLocal, { method: 'POST', body: { path, ...id === undefined ? {} : { id } } })
+    async addLocal(path, id, initialize = false) {
+      const answer = await call<AddLocalAnswer>(fetcher, ROUTES.addLocal, { method: 'POST', body: { path, ...id === undefined ? {} : { id }, ...initialize ? { initialize: true } : {} }, ...initialize ? { timeoutMs: GIT_TIMEOUT_MS } : {} })
       await refreshLibrary()
-      return answer.entry
+      return answer
     },
+    pickFolder: start => call<PickFolderAnswer>(fetcher, ROUTES.pickFolder, { method: 'POST', body: start === undefined || start.trim() === '' ? {} : { start: start.trim() }, timeoutMs: PICK_TIMEOUT_MS }),
     async update(id, force = false) {
       const answer = await call<{ entry: LibraryEntry, changed: boolean }>(fetcher, ROUTES.update, { method: 'POST', body: { id, force }, timeoutMs: GIT_TIMEOUT_MS })
       await refreshLibrary()
