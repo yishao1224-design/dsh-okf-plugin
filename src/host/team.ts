@@ -112,6 +112,12 @@ export interface TeamOptions {
   readonly env?: NodeJS.ProcessEnv
   /** A repository to connect when none is yet (row config `team:`). */
   readonly preset?: { readonly url: string, readonly ref?: string, readonly root?: string }
+  /**
+   * The setup skill DSH can run now (e.g. `kb-setup`), or undefined. With one,
+   * New project wiki leaves the bundle to it: the session opens with
+   * `/<skill> …` prefilled instead of the plugin scaffolding the folder.
+   */
+  readonly setupSkill?: () => Promise<string | undefined>
 }
 
 /** The state file. */
@@ -1299,7 +1305,14 @@ export function openTeam(options: TeamOptions): Team {
       const record = await newWorkspace(data, folder, name, true)
       await save(data)
       await ensureToolchain(record.workspace)
-      await scaffold(record.workspace, folder, name, schemaFrom === undefined ? undefined : join(mainDir, schemaFrom, 'SCHEMA.md'))
+      const skill = await options.setupSkill?.().catch(() => undefined)
+      if (skill === undefined) {
+        await scaffold(record.workspace, folder, name, schemaFrom === undefined ? undefined : join(mainDir, schemaFrom, 'SCHEMA.md'))
+      } else {
+        // The setup skill writes the bundle in the session; the folder (and a copied schema) exist now.
+        await mkdir(join(record.workspace, ...folder.split('/')), { recursive: true })
+        if (schemaFrom !== undefined) await copyFile(join(mainDir, schemaFrom, 'SCHEMA.md'), join(record.workspace, ...folder.split('/'), 'SCHEMA.md'))
+      }
       // Register the project in the hub's AGENTS.md (created when missing).
       const agents = join(record.workspace, 'AGENTS.md')
       const before = await readFile(agents, 'utf8').catch(() => '')
@@ -1314,20 +1327,35 @@ export function openTeam(options: TeamOptions): Team {
       }
       await writeFile(agents, addRegistryRow(source, { project: name, bundle: folder, ...repo === undefined ? {} : { repo }, ...owner === undefined ? {} : { owner }, ...summary === undefined ? {} : { summary } }))
       const entry = await options.library.put(entryFor(record))
-      return { record, entry, workspace: record.workspace, created: true }
+      return { record, entry, workspace: record.workspace, created: true, skill, copied: schemaFrom }
     })
     let init: Pick<MaintainAnswer, 'initialize' | 'initializeError'> = {}
     if (request.initialize === true) {
       init = await serial(() => checkoutCode(answer.record)).then(value => ({ initialize: value }), (error: unknown) => ({ initializeError: (error as Error).message }))
     }
-    try {
-      const pr = await openPr(answer.record.id, { title: `Add the ${answer.record.wikiName} project wiki`, summary: `Sets up a new project wiki at \`${answer.record.wiki}\`.` })
-      const fresh = (await load()).maintains.find(record => record.id === answer.record.id) ?? answer.record
-      return { ...answer, ...init, record: fresh, pr }
-    } catch (error) {
-      return { ...answer, ...init, prError: (error as Error).message }
-    }
+    const { skill, copied, ...opened } = answer
+    // No pull request yet: like any round, the person presses Open pull request when the wiki is ready.
+    if (skill === undefined) return { ...opened, ...init }
+    const prompt = wikiSetupPrompt(skill, opened.record, copied, init.initialize?.prompt)
+    return { ...opened, ...init, setup: { skill, prompt } }
   }
+
+  /**
+   * The composer text that runs the setup skill for a new project wiki.
+   * @param skill - the skill, e.g. `kb-setup`.
+   * @param record - the new wiki's workspace record.
+   * @param copied - the wiki whose SCHEMA.md was copied in, if any.
+   * @param code - the Initialize-from-code task to continue with, if any.
+   * @returns the prompt.
+   */
+  const wikiSetupPrompt = (skill: string, record: MaintainRecord, copied: string | undefined, code: string | undefined): string => [
+    `/${skill} Set up the ${record.wikiName} project wiki as the OKF bundle \`${record.wiki}/\` of this team wiki repository: \`python ${options.okfScript} init --bundle ${record.wiki}\`. Do not ask for a bundle name, and leave the other project wikis and files outside \`${record.wiki}/\` alone.`,
+    `Add \`wiki_name: "${record.wikiName}"\` to the frontmatter of its SCHEMA.md.`,
+    ...copied === undefined ? [] : [`Its SCHEMA.md was copied from \`${copied}/\`: keep its types and tags, and only rewrite the Domain for this project.`],
+    ...code === undefined
+      ? ['When the schema is ready, tell me; I will press Open pull request.']
+      : ['Fill in the Domain, types and tags from the project\'s code instead of asking me, then continue with this task:', '', code],
+  ].join('\n')
 
   /** Lay out a new project wiki in a workspace. */
   /**

@@ -241,9 +241,8 @@ function WikisTab({ store, state, data, t, onCreate }: { readonly store: OkfStor
 }
 
 /**
- * A new project wiki whose setup pull request has not merged: its workspace,
- * and its pull request (or the button that opens it, when the first try failed,
- * e.g. before a token was set).
+ * A new project wiki not on the base branch yet: its workspace, and its
+ * pull request once opened (else the Open pull request button).
  * @param props - store, the workspace record.
  * @returns the card.
  */
@@ -542,6 +541,12 @@ function codeTitle(wiki: ProjectWiki, t: T): string {
 function initText(outcome: OpenOutcome, t: T): { kind: 'ok' | 'error', text: string } | undefined {
   const answer = outcome.answer
   if (answer.initializeError !== undefined) return { kind: 'error', text: t('team.initFailed', { reason: answer.initializeError }) }
+  // New project wiki with kb-setup: one prompt carries the setup (and the read-through, when asked for).
+  if (answer.setup !== undefined) {
+    if (outcome.prefilled === true) return { kind: 'ok', text: t('team.setupPrefilled', { skill: answer.setup.skill }) }
+    void navigator.clipboard?.writeText(answer.setup.prompt).catch(() => undefined)
+    return { kind: 'ok', text: `${t('team.initCopied', { code: answer.initialize?.code ?? '.code' })}\n\n${answer.setup.prompt}` }
+  }
   if (answer.initialize === undefined) return undefined
   if (outcome.prefilled === true) return { kind: 'ok', text: t('team.initPrefilled', { code: answer.initialize.code }) }
   void navigator.clipboard?.writeText(answer.initialize.prompt).catch(() => undefined)
@@ -763,7 +768,7 @@ function NewWikiDialog({ store, data, t, onClose }: { readonly store: OkfStore, 
       const init = initText(outcome, t)
       const prText = outcome.answer.pr?.pr !== undefined
         ? t('team.createdPr', { number: outcome.answer.pr.pr.number })
-        : outcome.answer.prError !== undefined ? t('team.createdNoPr', { reason: outcome.answer.prError }) : ''
+        : outcome.answer.prError !== undefined ? t('team.createdNoPr', { reason: outcome.answer.prError }) : t('team.createdNext')
       store.setNotice({ kind: outcome.answer.prError === undefined ? 'ok' : 'error', text: `${t('team.created', { name: outcome.answer.record.wikiName, branch: outcome.answer.record.branch })} ${prText}${outcome.opened ? '' : `\n${manualText(outcome, t)}`}${init === undefined ? '' : `\n${init.text}`}` })
       onClose()
     }, (failure: unknown) => {

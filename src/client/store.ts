@@ -403,7 +403,7 @@ export function createOkfStore(fetcher: Fetcher = (input, init) => globalThis.fe
 
   const afterMaintain = async (answer: MaintainAnswer): Promise<OpenOutcome> => {
     await Promise.all([refreshLibrary(), loadTeam()])
-    const outcome = await openWorkspace(answer.entry, answer.workspace, answer.initialize?.prompt)
+    const outcome = await openWorkspace(answer.entry, answer.workspace, answer.setup?.prompt ?? answer.initialize?.prompt)
     return { answer, ...outcome }
   }
 

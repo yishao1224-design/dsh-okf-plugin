@@ -415,7 +415,12 @@ export interface MaintainAnswer {
    * records no usable commit and the task is the full read-through.
    */
   readonly sync?: { readonly from?: string, readonly to: string, readonly files: number, readonly pages: number, readonly upToDate?: true, readonly fallback?: true }
-  /** New project wiki opens its first pull request right away; this says how that went. */
+  /**
+   * New project wiki with a setup skill (kb-setup) DSH can run: the bundle is
+   * left to it, and `prompt` (which carries the Initialize-from-code task too,
+   * when one was asked for) is prefilled in the new session.
+   */
+  readonly setup?: { readonly skill: string, readonly prompt: string }
   readonly pr?: OpenPrAnswer
   readonly prError?: string
 }

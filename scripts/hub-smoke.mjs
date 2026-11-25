@@ -151,7 +151,7 @@ const tools = new Map()
 host.apply({
   connection: { fetch: { register: (route) => { routes.set(route.path, route); return async () => {} } } },
   inject: (_deps, callback) => { callback({ systemPrompt: { context: () => () => {} }, tools: { register: (tool) => { tools.set(tool.name, tool); return () => {} } } }) },
-}, { libraryDir, team: { githubHost: 'github.acme.com', githubApi, python, agentActor: 'dsh/smoke' } })
+}, { libraryDir, skills: false, team: { githubHost: 'github.acme.com', githubApi, python, agentActor: 'dsh/smoke' } })
 
 async function api(path, { method = 'GET', query, body } = {}) {
   const route = routes.get(path)
@@ -160,6 +160,19 @@ async function api(path, { method = 'GET', query, body } = {}) {
   const response = await route.fetch(new Request(url, { method, ...body === undefined ? {} : { body: JSON.stringify(body), headers: { 'content-type': 'application/json' } } }))
   const text = await response.text()
   return { status: response.status, body: text === '' ? null : JSON.parse(text) }
+}
+
+/**
+ * New project wiki, then Open pull request, as a person does: create opens no pull request itself.
+ * @param body - the create request.
+ * @param label - for failures.
+ * @returns the create answer, with `pr` (the open-pr answer) or `prError`.
+ */
+async function createWiki(body, label) {
+  const made = must(await api('/api/okf/team/create', { method: 'POST', body }), label)
+  check(made.pr === undefined && made.prError === undefined, `${label}: New project wiki opens no pull request by itself`)
+  const opened = await api('/api/okf/team/open-pr', { method: 'POST', body: { id: made.record.id } })
+  return opened.status === 200 ? { ...made, pr: opened.body } : { ...made, prError: opened.body.error.message }
 }
 const must = (answer, label) => {
   if (answer.status !== 200) {
@@ -335,7 +348,7 @@ const preview = must(await api('/api/okf/team/attach', { method: 'POST', body: {
 check(preview.entry.id === 'team-main-payments' && preview.entry.teamWiki === 'payments' && preview.entry.id !== record.entryId, `preview entry stays apart from the workspace entry: ${JSON.stringify(preview.entry)}`)
 
 // ── New project wiki: a bundle at the root plus a registry row, one PR ──
-const created = must(await api('/api/okf/team/create', { method: 'POST', body: { name: 'Settlement', template: 'copy:payments', repo: 'https://github.acme.com/pay/settlement', owner: '@carol', summary: 'Daily settlement | batches', initialize: true } }), 'create')
+const created = await createWiki({ name: 'Settlement', template: 'copy:payments', repo: 'https://github.acme.com/pay/settlement', owner: '@carol', summary: 'Daily settlement | batches', initialize: true }, 'create')
 check(created.initialize === undefined && typeof created.initializeError === 'string', `an unreachable code repository does not stop New project wiki: ${created.initializeError}`)
 const nws = created.workspace
 check(created.record.wiki === 'settlement' && created.entry.root === join(nws, 'settlement'), `create: ${JSON.stringify(created.record)}`)
@@ -353,7 +366,7 @@ check(ci.status === 1 && ci.stdout.includes('project wiki: settlement') && ci.st
 
 // A setup pull request that failed to open (say, no token yet) can be opened later from its card.
 failPulls = true
-const shadow = must(await api('/api/okf/team/create', { method: 'POST', body: { name: 'Shadow' } }), 'create without a pull request')
+const shadow = await createWiki({ name: 'Shadow' }, 'create without a pull request')
 check(shadow.pr === undefined && typeof shadow.prError === 'string', `the setup PR failed: ${JSON.stringify(shadow.prError)}`)
 status = must(await api('/api/okf/team'), 'status with a pending wiki')
 check(status.maintains.some(item => item.id === shadow.record.id && item.pr === undefined) && !status.wikis.some(wiki => wiki.folder === 'shadow'), 'the new wiki waits without a pull request')
@@ -362,6 +375,20 @@ check(reopened.record.id === shadow.record.id && reopened.created === false, 'Op
 const shadowPr = must(await api('/api/okf/team/open-pr', { method: 'POST', body: { id: shadow.record.id } }), 'open the missing setup PR')
 check(shadowPr.pr?.number !== undefined && shadowPr.files.includes('shadow/SCHEMA.md') && shadowPr.files.includes('AGENTS.md'), `setup PR opened later: ${JSON.stringify(shadowPr)}`)
 for (const pull of pulls) if (pull.number === shadowPr.pr?.number) pull.state = 'closed'
+
+// With the bundled kb-setup skill, New project wiki leaves the bundle to it: only the folder, the registry row and a /kb-setup prompt.
+{
+  const skillRoutes = new Map()
+  host.apply({
+    connection: { fetch: { register: (route) => { skillRoutes.set(route.path, route); return async () => {} } } },
+    inject: (_deps, callback) => { callback({ systemPrompt: { context: () => () => {} }, tools: { register: () => () => {} }, skills: { registerProvider: () => () => {} } }) },
+  }, { libraryDir, skillDirs: [join(work, 'no-skills')], team: { githubHost: 'github.acme.com', githubApi, python, agentActor: 'dsh/smoke' } })
+  const response = await skillRoutes.get('/api/okf/team/create').fetch(new Request('http://127.0.0.1:3080/api/okf/team/create', { method: 'POST', body: JSON.stringify({ name: 'Ledger Two', template: 'copy:payments' }), headers: { 'content-type': 'application/json' } }))
+  const made = await response.json()
+  const folder = join(made.workspace ?? work, 'ledger-two')
+  check(response.status === 200 && made.pr === undefined && made.setup?.skill === 'kb-setup' && made.setup.prompt.startsWith('/kb-setup ') && made.setup.prompt.includes('init --bundle ledger-two') && made.setup.prompt.includes('wiki_name: "Ledger Two"') && made.setup.prompt.includes('copied from `payments/`'), `kb-setup takes New project wiki: ${JSON.stringify(made.setup ?? made)}`)
+  check(readdirSync(folder).join(',') === 'SCHEMA.md' && readFileSync(join(made.workspace, 'AGENTS.md'), 'utf8').includes('| Ledger Two |'), `only the copied schema and the registry row are written: ${readdirSync(folder).join(',')}`)
+}
 
 // After merge the registry lists it with its columns.
 git(origin, 'update-ref', 'refs/heads/main', `refs/heads/${created.record.branch}`)
@@ -392,7 +419,7 @@ answer: {
   const again = await api('/api/okf/team/setup', { method: 'POST', body: {} })
   check(again.status === 409 && again.body.error.code === 'not-empty', `a second setup is refused: ${JSON.stringify(again.body)}`)
 }
-const first = must(await api('/api/okf/team/create', { method: 'POST', body: { name: 'Payments', owner: '@alice' } }), 'create in new hub')
+const first = await createWiki({ name: 'Payments', owner: '@alice' }, 'create in new hub')
 const firstAgents = readFileSync(join(first.workspace, 'AGENTS.md'), 'utf8')
 check(first.record.wiki === 'payments' && /\|---\|---\|---\|---\|---\|\n\| Payments \| — \| — \| @alice \| `payments\/` \|/.test(firstAgents) && first.pr?.files.includes('payments/index.md'), `first project in the new hub: ${first.prError ?? ''} ${firstAgents.slice(-300)}`)
 
@@ -454,7 +481,7 @@ check(again2.created === false && again2.record.id === round2.record.id, 'an ope
   process.env.GIT_CONFIG_KEY_4 = `url.${pathToFileURL(plainOrigin).href}.insteadOf`
   process.env.GIT_CONFIG_VALUE_4 = PLAIN_URL
   must(await api('/api/okf/team/connect', { method: 'POST', body: { url: PLAIN_URL, ref: 'main' } }), 'connect a hub without the toolchain')
-  const made = must(await api('/api/okf/team/create', { method: 'POST', body: { name: 'Translation Hub' } }), 'create in a hub without the toolchain')
+  const made = await createWiki({ name: 'Translation Hub' }, 'create in a hub without the toolchain')
   const schema = readFileSync(join(made.workspace, 'translation-hub', 'SCHEMA.md'), 'utf8')
   check(schema.includes('# Type registry') && schema.includes('wiki_name: "Translation Hub"') && existsSync(join(made.workspace, 'translation-hub', 'concepts')), `the full starter schema, not the stub: ${schema.slice(0, 400)}`)
   check(made.pr?.files.includes('scripts/okf.py') && made.pr.files.includes('translation-hub/SCHEMA.md') && made.pr.eligible === false && made.pr.notes.some(note => note.includes('adds the plugin\'s copy')), `the setup pull request carries the toolchain: ${JSON.stringify(made.pr ?? made.prError)}`)
