@@ -1728,6 +1728,15 @@ export function openTeam(options: TeamOptions): Team {
           else if (entry.isFile()) files.push({ path, source: entry.name.endsWith('.md') ? await readFile(join(dir, entry.name), 'utf8') : '' })
         }
       }
+      // index.md becomes the landing page: bring it up to date first, as Open
+      // pull request will (a source file just added is listed there), so
+      // publishing again right after renders the same pages.
+      const script = join(record.workspace, options.okfScript)
+      if (await isFile(script)) {
+        await run(options.python, [script, 'index', '--bundle', folder], { cwd: record.workspace, timeoutMs: options.timeoutMs }).catch((error: unknown) => {
+          console.warn('[okf] okf.py index failed before publishing; rendering the index as it is:', error)
+        })
+      }
       await walk(bundle, '')
       const rendered = renderBundle(files, {
         name: project.name,

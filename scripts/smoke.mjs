@@ -105,7 +105,7 @@ host.apply({
   },
 }, { libraryDir, indexChars: 2000, skills: false })
 
-check(routes.size === 25, `expected 25 routes, saw ${String(routes.size)}`)
+check(routes.size === 26, `expected 26 routes, saw ${String(routes.size)}`)
 check([...routes.values()].every(route => route.path.startsWith('/api/okf/') && route.requestBody === 'buffered'), 'every route must sit under /api/okf with a buffered body')
 check(injected.join('|') === 'systemPrompt|tools', `optional services ${injected.join('|')}`)
 check(contexts.length === 1 && contexts[0].name === 'okf:session-bundle' && typeof contexts[0].text === 'function', 'one prompt context with a text callback')
@@ -171,6 +171,13 @@ check(summary.pages.find(page => page.path === 'index.md')?.reserved === true, '
 answer = await api('/api/okf/page', { query: { id: 'alpha-kb', path: '/concepts/alpha.md' } })
 check(answer.status === 200 && answer.body.meta.title === 'Alpha Widget' && answer.body.body.includes('rotates'), 'page read')
 check(answer.body.meta.sources === undefined, 'a nested frontmatter block must not be guessed at')
+check(JSON.stringify(answer.body.sources) === '[{"resource":"/sources/x.md","id":"x"}]', `the page's sources come apart from meta ${JSON.stringify(answer.body.sources)}`)
+for (const bad of ['../../../README.md', '.git/config', 'sources/../../../x']) {
+  answer = await api('/api/okf/open-file', { method: 'POST', body: { id: 'alpha-kb', path: bad } })
+  check(answer.status === 400 && answer.body.error.code === 'bad-path', `open-file ${bad} answered ${String(answer.status)}`)
+}
+answer = await api('/api/okf/open-file', { method: 'POST', body: { id: 'alpha-kb', path: 'sources/missing.xlsx' } })
+check(answer.status === 404 && answer.body.error.code === 'not-found', `open-file of a missing file answers 404 ${JSON.stringify(answer.body)}`)
 for (const bad of ['../../../README.md', 'concepts/../../../README.md', '..\\..\\README.md', 'concepts/alpha.txt']) {
   answer = await api('/api/okf/page', { query: { id: 'alpha-kb', path: bad } })
   check(answer.status === 400, `path ${bad} answered ${String(answer.status)}`)
@@ -556,6 +563,13 @@ check(/<table[^>]*>.*<th[^>]*>Key<\/th>.*text-align:right/.test(html), 'tables w
 check(/<ul[^>]*><li[^>]*>one<\/li><li[^>]*>two<ul[^>]*><li[^>]*>nested<\/li><\/ul><\/li><\/ul>/.test(html), `nested lists: ${html.match(/<ul.*<\/ul>/)?.[0]}`)
 check(html.includes('const x = &quot;&lt;b&gt;&quot;'), 'fenced code is escaped')
 check(client.bundleTarget('../entities/x.md', 'concepts/a.md') === 'entities/x.md' && client.bundleTarget('/x.md', 'a/b/c.md') === 'x.md', 'relative and root links')
+check(client.bundleFile('../sources/a.xlsx', 'concepts/a.md') === 'sources/a.xlsx' && client.bundleTarget('../sources/a.xlsx', 'concepts/a.md') === undefined, 'a source file is a bundle file, not a page')
+{
+  const filed = renderToStaticMarkup(React.createElement(React.Fragment, null, client.renderMarkdown('[rates](../sources/rates.xlsx) and ![flow](/sources/flow.png)', { pagePath: 'concepts/a.md', onBundleLink: () => {}, onFileLink: () => {} })))
+  check(filed.includes('title="sources/rates.xlsx"') && filed.includes('title="sources/flow.png"'), `links to source files open them: ${filed}`)
+  const plain = renderToStaticMarkup(React.createElement(React.Fragment, null, client.renderMarkdown('[rates](../sources/rates.xlsx)', { pagePath: 'concepts/a.md', onBundleLink: () => {} })))
+  check(plain.includes('<span title="../sources/rates.xlsx">'), `without onFileLink a source file link is text: ${plain}`)
+}
 check(client.bundleTarget('../../x.md', 'concepts/a.md') === undefined && client.bundleTarget('https://a.b/c.md', 'a.md') === undefined, 'links leaving the bundle are not bundle links')
 
 for (const dispose of disposers.reverse()) dispose()

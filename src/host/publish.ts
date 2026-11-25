@@ -17,11 +17,14 @@
  *   `-` and `:<>*?|"%` percent-encoded), from each page's `title`;
  * - each folder gets a page listing its pages;
  * - links between published pages become wiki paths (`/Projects/P/Concepts/X`);
- *   links to anything else in the bundle go to the file in the hub; links to
- *   nothing become plain text.
+ *   links to anything else in the bundle go to the file in the hub (an
+ *   embedded image to its raw bytes); links to nothing become plain text;
+ * - a page's `sources` become a `## Sources` list, so a reader can reach the
+ *   workbook, PDF or URL a claim rests on: files kept as-is under `sources/`
+ *   are not copied into the wiki, they link to the file in the hub.
  */
 import { posix } from 'node:path'
-import { reviewState, splitPage } from './review.ts'
+import { reviewState, sourceEntries, splitPage } from './review.ts'
 import { pageStage } from './stage.ts'
 import { parsePage, text as metaText } from './frontmatter.ts'
 
@@ -189,10 +192,33 @@ export function renderBundle(files: readonly BundleFile[], project: PublishProje
         const page = target.get(resolved)
         if (page !== undefined && bang === '') return `[${label}](${wikiLink(page)}${anchor === undefined ? '' : `#${anchor}`}${title})`
         if (resolved === 'index.md' && bang === '') return `[${label}](${wikiRoot}${title})`
-        if (known.has(resolved)) return `${bang}[${label}](${hubFile(resolved)}${anchor === undefined ? '' : `#${anchor}`}${title})`
+        // An embedded image needs the file's bytes, not GitHub's page about it.
+        if (known.has(resolved)) return `${bang}[${label}](${hubFile(resolved)}${bang === '' ? '' : '?raw=true'}${anchor === undefined ? '' : `#${anchor}`}${title})`
         return bang === '' ? label : whole
       })
     }).join('\n')
+  }
+
+  /**
+   * The page's `sources` as a list: the wiki strips frontmatter, so this is
+   * where a reader finds the workbook or PDF a claim rests on (a link to the
+   * file in the hub) or the URL it came from.
+   */
+  const sourcesSection = (source: string, body: string, from: string): string => {
+    const entries = sourceEntries(source)
+    if (entries.length === 0 || /^#{1,3}\s+Sources\s*$/im.test(body)) return ''
+    const lines = entries.map((entry) => {
+      const label = (entry.title ?? entry.id ?? entry.resource).replace(/[[\]]/g, '')
+      const cite = entry.id === undefined ? '' : `\`${entry.id}\` `
+      if (/^https?:\/\//i.test(entry.resource)) return `- ${cite}[${label}](${entry.resource})`
+      const rawPath = entry.resource.split('#')[0] ?? ''
+      const resolved = rawPath.startsWith('/') ? posix.normalize(rawPath.slice(1)) : posix.normalize(posix.join(posix.dirname(from), rawPath))
+      const page = target.get(resolved)
+      if (!resolved.startsWith('..') && page !== undefined) return `- ${cite}[${label}](${wikiLink(page)})`
+      if (!resolved.startsWith('..') && known.has(resolved)) return `- ${cite}[${label}](${hubFile(resolved)})`
+      return `- ${cite}${label}`
+    })
+    return `\n## Sources\n\n${lines.join('\n')}\n`
   }
 
   const footer = (from: string): string => `\n---\n\n_Published from [${project.folder === '' ? '' : `${project.folder}/`}${from}](${hubFile(from)}) in the team wiki hub. Edit the bundle there, not this page; it is overwritten on the next publish._\n`
@@ -215,7 +241,7 @@ export function renderBundle(files: readonly BundleFile[], project: PublishProje
     } else {
       body = `# ${titleOf.get(file.path) ?? file.path}\n\n${status}\n\n${body}`
     }
-    out.push({ path: `${dir}/${target.get(file.path) ?? ''}.md`, content: `${relink(body, file.path).replace(/\s*$/, '\n')}${footer(file.path)}` })
+    out.push({ path: `${dir}/${target.get(file.path) ?? ''}.md`, content: `${relink(body, file.path).replace(/\s*$/, '\n')}${sourcesSection(file.source, body, file.path)}${footer(file.path)}` })
   }
 
   // 3 · A page for each folder, listing what is in it.

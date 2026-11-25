@@ -32,13 +32,14 @@
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { findLocalBundleRoots, isBundleRoot, readPage, summarize } from './host/bundle.ts'
+import { findLocalBundleRoots, isBundleRoot, readPage, resolveFile, summarize } from './host/bundle.ts'
 import { GitError } from './host/git.ts'
 import { IndexCache, sessionContext } from './host/knowledge.ts'
 import { GitHubError } from './host/github.ts'
 import { LibraryError, openLibrary } from './host/library.ts'
 import type { Library } from './host/library.ts'
 import { pickFolder } from './host/picker.ts'
+import { openFile } from './host/opener.ts'
 import { bundledSkills, skillProvider } from './host/skills.ts'
 import { RunError } from './host/run.ts'
 import { findSkill, isEmptyFolder } from './host/starter.ts'
@@ -274,6 +275,21 @@ export const handlers: Readonly<Record<string, { methods: readonly ('GET' | 'POS
       const path = await pickFolder({ title: 'Choose the folder of an OKF bundle, or an empty folder for a new one', ...start === undefined ? {} : { start } })
       if (path === null) return json({ path: null } satisfies PickFolderAnswer)
       return json({ path, kind: await folderKind(path) } satisfies PickFolderAnswer)
+    }),
+  },
+  [ROUTES.openFile]: {
+    methods: ['POST'],
+    handle: route(['POST'], async (request, { library }) => {
+      const record = await body(request)
+      const entry = await library.get(required(record, 'id'))
+      let file: string
+      try {
+        file = resolveFile(entry.root, required(record, 'path'))
+      } catch (error) {
+        throw new LibraryError('bad-path', (error as Error).message)
+      }
+      await openFile(file)
+      return json({ ok: true })
     }),
   },
   [ROUTES.editWorkspace]: {

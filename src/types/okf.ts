@@ -94,6 +94,24 @@ export interface PageContent {
   readonly path: string
   readonly meta: Readonly<Record<string, unknown>>
   readonly body: string
+  /** Its `sources` entries, which `meta` leaves out (they are nested mappings). */
+  readonly sources?: readonly PageSource[]
+}
+
+/** One `sources` entry of a page. */
+export interface PageSource {
+  /** Bundle-relative (`/sources/…`), document-relative (`../../x`), or a URL. */
+  readonly resource: string
+  readonly id?: string
+  readonly title?: string
+}
+
+/** POST body of open-file: a file of a bundle, opened with the Host machine's default app. */
+export interface OpenFileRequest {
+  /** The library entry. */
+  readonly id: string
+  /** Bundle-relative path (`sources/2026-11-25-budget.xlsx`). */
+  readonly path: string
 }
 
 /** The bundle chosen for one chat session. */
@@ -205,6 +223,8 @@ export const ROUTES = {
   bundle: `${API_BASE}/bundle`,
   /** GET `?id=&path=`: one page. */
   page: `${API_BASE}/page`,
+  /** POST `OpenFileRequest`: open a bundle file (a workbook, PDF, image kept under sources/) with its default app on the Host's machine. */
+  openFile: `${API_BASE}/open-file`,
   /** GET `?sessionId=`: the selection, or null. POST `{ sessionId, bundleId|null }`: set or clear it. */
   session: `${API_BASE}/session`,
   team: `${API_BASE}/team`,

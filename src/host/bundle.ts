@@ -11,6 +11,7 @@ import { readdir, readFile, stat } from 'node:fs/promises'
 import { join, relative, resolve, sep } from 'node:path'
 import { list, parsePage, text } from './frontmatter.ts'
 import { pageStage } from './stage.ts'
+import { sourceEntries } from './review.ts'
 import type { BundleSummary, LibraryEntry, PageContent, PageSummary } from '../types/okf.ts'
 
 /** Files OKF reserves; they need no `type`. */
@@ -190,6 +191,23 @@ export function resolvePage(root: string, path: string): string {
 }
 
 /**
+ * Resolve a bundle-relative file of any kind (a source kept as-is), refusing
+ * anything that leaves the bundle or reaches into `.git`.
+ * @param root - the bundle root.
+ * @param path - the requested path (`sources/budget.xlsx` or `/sources/budget.xlsx`).
+ * @returns the absolute file path.
+ * @throws {Error} when the path leaves the bundle.
+ */
+export function resolveFile(root: string, path: string): string {
+  const clean = path.replace(/\\/g, '/').replace(/^\/+/, '')
+  if (clean === '' || clean.split('/').some(part => part === '..' || part.toLowerCase() === '.git')) throw new Error('Not a file inside the bundle.')
+  const base = resolve(root)
+  const full = resolve(base, clean)
+  if (!full.startsWith(base + sep)) throw new Error('Not a file inside the bundle.')
+  return full
+}
+
+/**
  * Read one page.
  * @param entry - the library entry.
  * @param path - bundle-relative path.
@@ -199,8 +217,10 @@ export async function readPage(entry: LibraryEntry, path: string): Promise<PageC
   const full = resolvePage(entry.root, path)
   const info = await stat(full)
   if (info.size > PAGE_BYTES_CAP) throw new Error(`The page is larger than ${String(PAGE_BYTES_CAP / 1024 / 1024)} MB.`)
-  const { meta, body } = parsePage(await readFile(full, 'utf8'))
-  return { path: path.replace(/\\/g, '/').replace(/^\/+/, ''), meta, body }
+  const source = await readFile(full, 'utf8')
+  const { meta, body } = parsePage(source)
+  const sources = sourceEntries(source)
+  return { path: path.replace(/\\/g, '/').replace(/^\/+/, ''), meta, body, ...sources.length === 0 ? {} : { sources } }
 }
 
 /**
