@@ -85,6 +85,8 @@ export interface LibraryOptions {
   readonly setupSkill?: string
   /** DSH's skill folders, highest priority first, searched for `setupSkill`. */
   readonly skillRoots?: readonly string[]
+  /** The instruction file of a skill the plugin serves to DSH itself, when it does. */
+  readonly bundledSkill?: (name: string) => Promise<string | undefined>
 }
 
 /** Environment variables a token is read from, most specific first. */
@@ -364,6 +366,7 @@ export function openLibrary(options: LibraryOptions): Library {
           timeoutMs: options.gitTimeoutMs ?? 300_000,
           ...options.setupSkill === undefined ? {} : { setupSkill: options.setupSkill },
           ...options.skillRoots === undefined ? {} : { skillRoots: options.skillRoots },
+          ...options.bundledSkill === undefined ? {} : { bundledSkill: options.bundledSkill },
         })
         root = made.root
         created = { workspace: canonical(wanted), setup: made.setup, gitInit: made.gitInit, ...made.prompt === undefined ? {} : { prompt: made.prompt } }

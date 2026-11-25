@@ -48,7 +48,7 @@ Open a session and click **OKF**. The button sits in two places:
 
 - **Add bundle → From git:** paste the repository URL, then Fetch. The branch/tag and the bundle folder are optional. Without a folder, the plugin finds the bundle itself: a folder holding a `SCHEMA.md`, or an `index.md` whose frontmatter declares `okf_version`. If the repository holds several bundles it lists them and you pick one.
 - **Add bundle → Local folder:** registers a bundle already on disk, for example `F:\project\knowledgeAgent\okf` or the project folder above it. Type the path, or press **Browse…** to choose it in the system's own folder dialog (Windows `FolderBrowserDialog` through Windows PowerShell, macOS `choose folder`, Linux `zenity`/`kdialog`); the dialog opens on the computer running dsh. The plugin only records the path of a folder that already holds a bundle; it never deletes a local folder.
-- **Start a new knowledge base:** choose an **empty** folder (OS litter like `desktop.ini` and an empty `.git` are ignored) and the button turns into **Create knowledge base**. The plugin lays the folder out the way knowledgeAgent is laid out: `scripts/okf.py` (the plugin's own toolchain copy), `python scripts/okf.py init --bundle okf` for the bundle in `okf/` (SCHEMA.md, index.md, log.md and the type folders; pages carry only `status`, no `lifecycle` key), a short `AGENTS.md` and `.gitignore`, then `git init` (no commit). Without Python the same skeleton is written by the plugin itself. **When DSH has the `kb-setup` skill** (knowledgeAgent's; found as `kb-setup/SKILL.md` or `kb-setup.md` in a `skillDirs` entry, `<DSH home>/skills` or `~/.agents/skills`, and not `user-invocable: false`), the plugin leaves the setup to it: it only makes the folder a git repository with an empty `okf/`, and the new session opens with `/kb-setup …` prefilled in its composer, ready to send. Set `setupSkill: ''` on the row to always use the plugin's own setup, or another name to use a different skill. The new entry is editable at once: the folder is its editing workspace, and DSH opens a session there with the bundle attached. A folder that is neither empty nor holds a bundle is refused, never written to.
+- **Start a new knowledge base:** choose an **empty** folder (OS litter like `desktop.ini` and an empty `.git` are ignored) and the button turns into **Create knowledge base**. The plugin lays the folder out the way knowledgeAgent is laid out: `scripts/okf.py` (the plugin's own toolchain copy), `python scripts/okf.py init --bundle okf` for the bundle in `okf/` (SCHEMA.md, index.md, log.md and the type folders; pages carry only `status`, no `lifecycle` key), a short `AGENTS.md` and `.gitignore`, then `git init` (no commit). Without Python the same skeleton is written by the plugin itself. **When DSH has the `kb-setup` skill** (the plugin ships it, see *Bundled kb-\* skills*; a copy found as `kb-setup/SKILL.md` or `kb-setup.md` in a `skillDirs` entry, `<DSH home>/skills` or `~/.agents/skills` counts too, unless it sets `user-invocable: false`), the plugin leaves the setup to it: it only makes the folder a git repository with an empty `okf/`, and the new session opens with `/kb-setup …` prefilled in its composer, ready to send. Set `setupSkill: ''` on the row to always use the plugin's own setup, or another name to use a different skill. The new entry is editable at once: the folder is its editing workspace, and DSH opens a session there with the bundle attached. A folder that is neither empty nor holds a bundle is refused, never written to.
 - **Preview:** select a bundle on the left. Filter the catalog by title, path, description or tag, and open a page to read it. Links between pages open in place.
 - **Attach to the session:** pick the bundle in **This session uses**, or click **Use in this session**. It takes effect from the next turn. Choose **No bundle** to detach it.
 - **Update** pulls the latest commit of a git bundle. If the local copy has edits, it refuses, and offers to overwrite them.
@@ -224,6 +224,13 @@ The context re-reads `index.md` whenever its modification time changes, so the c
 
 The selection is stored in the plugin's own `library.json`, keyed by session id, not in the session log. Choosing a bundle therefore never writes an event that another DSH build would refuse to load.
 
+
+### Bundled kb-\* skills
+
+The plugin ships knowledgeAgent's lifecycle skills in `skills/`: `kb-setup`, `kb-ingest`, `kb-query`, `kb-review`, `kb-curate` and `kb-lint` (kb-setup with `okf.py` beside it). The Host offers them to DSH's skill registry (`ctx.skills.registerProvider`, the way DSH's own Office skill is registered), so every session can run `/kb-setup`, `/kb-ingest` and the rest, and the model can load them, with nothing to copy. They sit at DSH's bundled rank (600), the lowest: a same-named skill in the project, `~/.dsh/skills` or `~/.agents/skills` wins, so a personal copy still overrides one. Without DSH's skill registry the plugin keeps working and falls back to looking in the skill folders. `skills: false` turns them off.
+
+knowledgeAgent stays their source: after changing a skill or `okf.py` there, run `npm run sync-skills -- <knowledgeAgent checkout>` here and commit (it also refreshes `templates/hub/scripts/okf.py`; the smoke test checks both `okf.py` copies match).
+
 ## Config
 
 Optional settings go under the row in `cordis.patch.yml`. A patch replaces the whole `config` block.
@@ -238,6 +245,7 @@ Optional settings go under the row in `cordis.patch.yml`. A patch replaces the w
 | `tools` | `true` | Register the Team Wiki tools `wiki_sync_from_code` and `wiki_open_pr` |
 | `setupSkill` | `kb-setup` | Skill that sets up a new knowledge base in an empty local folder when DSH has it (the session opens with `/<name>` prefilled); `''` always uses the plugin's own setup |
 | `skillDirs` | `[]` | Extra folders to look for `setupSkill` in (match DSH's `customSkillDirs`), before `<DSH home>/skills` and `~/.agents/skills` |
+| `skills` | `true` | Offer the bundled kb-\* skills to DSH's skill registry |
 | `team.url` | — | Team wiki repository to connect when none is connected yet |
 | `team.ref` | the remote's default branch | Base branch of the team wiki |
 | `team.root` | `''` (repository root) | Where to look for bundles when `AGENTS.md` has no registry |
@@ -264,6 +272,7 @@ dsh-okf-plugin/
 ├── package.json          # dsh.bundle.patch + dsh.client + exports["./client"]
 ├── cordis.patch.yml      # inserts the one row, named after this package
 ├── build.mjs             # emits lib/index.js (Host), lib/client.js (browser), lib/check-pr.js (CI)
+├── skills/               # knowledgeAgent's kb-* skills (npm run sync-skills), served to DSH
 ├── examples/
 │   └── wiki-auto-merge.yml # CI workflow for the team wiki repository
 ├── src/
@@ -276,6 +285,9 @@ dsh-okf-plugin/
 │   │   ├── knowledge.ts  # the per-session prompt context (team rules in maintenance sessions)
 │   │   ├── team.ts       # Team Wiki: project wikis, PR list, Maintain, New project wiki, Open pull request
 │   │   ├── tools.ts      # the model tools wiki_sync_from_code and wiki_open_pr (automation tasks)
+│   │   ├── skills.ts     # the bundled kb-* skills as a DSH skill provider
+│   │   ├── starter.ts    # an empty local folder → new knowledge base (or /kb-setup)
+│   │   ├── picker.ts     # the system folder dialog behind Browse…
 │   │   ├── review.ts     # reviewed/unreviewed from frontmatter; the agent-edit stamp
 │   │   ├── eligibility.ts# the auto-merge rule (shared with lib/check-pr.js)
 │   │   ├── github.ts     # the few GitHub REST calls
@@ -339,6 +351,7 @@ DSH_ROOT=D:/project/dsh node --import file:///D:/project/dsh/node_modules/tsx/di
 
 ## Not verified yet
 
+- **Browse…, the bundled skills and the prefilled `/kb-setup` have not run in a live Harness yet.** The Windows folder dialog was written from the .NET `FolderBrowserDialog` API and not run on Windows here; the skill provider follows `@deepseek-ai/dsh-skill`'s `registerProvider` contract and DSH's own Office provider, but whether an out-of-tree plugin reaches `ctx.skills` is unconfirmed (without it the setup falls back to the skill folders).
 - **The Team Wiki tools have not run from a real automation task yet.** `harness-check.mjs` registered and called them in DSH 0.2.1-rc.2's real `ToolRuntime`, and `hub-smoke.mjs` ran them against a stand-in GitHub Enterprise, but a Schedule reminder firing in a live maintenance session, with its permission preset, has not been tried.
 - **Published pages have not been opened in a real Azure DevOps wiki.** The file names follow Microsoft's documented title rules, but how the wiki resolves links to pages whose names hold an encoded character (for example `%2D` for a hyphen in a title) is untested. Run Publish once against a test wiki and check those links.
 

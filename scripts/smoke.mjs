@@ -103,7 +103,7 @@ host.apply({
     injected.push(deps.join(','))
     callback({ systemPrompt: { context: (c) => { contexts.push(c); return () => {} } }, tools: { register: (t) => { tools.push(t); return () => {} } } })
   },
-}, { libraryDir, indexChars: 2000 })
+}, { libraryDir, indexChars: 2000, skills: false })
 
 check(routes.size === 25, `expected 25 routes, saw ${String(routes.size)}`)
 check([...routes.values()].every(route => route.path.startsWith('/api/okf/') && route.requestBody === 'buffered'), 'every route must sit under /api/okf with a buffered body')
@@ -244,6 +244,34 @@ write(notEmpty, { 'notes.txt': 'mine\n' })
 answer = await api('/api/okf/add-local', { method: 'POST', body: { path: notEmpty, initialize: true } })
 check(answer.status === 422 && answer.body.error.code === 'no-bundle' && readdirSync(notEmpty).length === 1, `a folder with files of its own is never initialized ${JSON.stringify(answer.body)}`)
 await api('/api/okf/remove', { method: 'POST', body: { id: 'blank-kb-okf' } })
+// The plugin's own kb-* skills, offered to DSH's skill registry; with them, setup goes to /kb-setup.
+{
+  const providers = []
+  const skillRoutes = new Map()
+  const skillInjected = []
+  host.apply({
+    connection: { fetch: { register: (route) => { skillRoutes.set(route.path, route); return async () => {} } } },
+    inject: (deps, callback) => {
+      skillInjected.push(deps.join(','))
+      callback({ systemPrompt: { context: () => () => {} }, tools: { register: () => () => {} }, skills: { registerProvider: (create) => { providers.push(create({ signal: new AbortController().signal, invalidate: () => {} })); return () => {} } } })
+    },
+  }, { libraryDir: join(work, 'skills-library'), skillDirs: [join(work, 'no-skills-here')] })
+  check(skillInjected.join('|') === 'systemPrompt|skills|tools' && providers.length === 1 && providers[0].name === 'dsh-okf', `the skill provider registers ${skillInjected.join('|')}`)
+  const listed = await providers[0].list({ cwd: work })
+  const names = listed.map(candidate => candidate.name).join(',')
+  check(names === 'kb-curate,kb-ingest,kb-lint,kb-query,kb-review,kb-setup', `bundled skills ${names}`)
+  check(listed.every(candidate => candidate.rank === 600 && candidate.source === 'bundled' && candidate.provider === 'dsh-okf' && candidate.invocation.userInvocable && candidate.invocation.modelInvocable && candidate.description.length > 20 && existsSync(candidate.path)), 'bundled skills sit at the bundled rank with a description and a file')
+  const setupSkill = listed.find(candidate => candidate.name === 'kb-setup')
+  const loaded = await providers[0].get(setupSkill, { cwd: work })
+  check(loaded?.content.startsWith('# kb-setup') === true && !loaded.content.includes('\nname: kb-setup') && existsSync(join(loaded.resourceBase.path, 'okf.py')), 'kb-setup loads without its frontmatter, with okf.py beside it')
+  check(readFileSync(join(root, 'skills', 'kb-setup', 'okf.py'), 'utf8') === readFileSync(join(root, 'templates', 'hub', 'scripts', 'okf.py'), 'utf8'), 'skills/kb-setup/okf.py is the same toolchain as templates/hub/scripts/okf.py (run npm run sync-skills)')
+  check(await providers[0].get({ ...setupSkill, locator: join(work, 'gone') }, { cwd: work }) === undefined, 'a skill that went away loads as undefined')
+  const fresh = join(work, 'bundled-kb')
+  mkdirSync(fresh)
+  const response = await skillRoutes.get('/api/okf/add-local').fetch(new Request('http://127.0.0.1:3080/api/okf/add-local', { method: 'POST', body: JSON.stringify({ path: fresh, initialize: true }), headers: { 'content-type': 'application/json' } }))
+  const made = await response.json()
+  check(response.status === 200 && made.created?.setup === 'skill' && made.created?.prompt?.startsWith('/kb-setup ') === true && readdirSync(join(fresh, 'okf')).length === 0 && !existsSync(join(fresh, 'scripts')), `with the bundled kb-setup the session gets /kb-setup ${JSON.stringify(made)}`)
+}
 // With a kb-setup skill DSH can see, setup is left to the skill: an empty okf/ and the /kb-setup prompt.
 {
   const skills = join(work, 'skill-home')

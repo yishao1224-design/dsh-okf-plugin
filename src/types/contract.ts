@@ -74,6 +74,8 @@ export interface SystemPromptService {
   context(context: PromptContext): () => void
 }
 
+import type { SkillsService } from '../host/skills.ts'
+
 /** The Host half's context. `connection` is required; the rest arrive through `inject`. */
 export interface HostContext {
   readonly connection: HostConnection
@@ -88,6 +90,8 @@ export interface HostContext {
 export interface HostScope {
   readonly systemPrompt: SystemPromptService
   readonly tools: ToolsService
+  /** DSH's skill registry (`@deepseek-ai/dsh-skill`), reduced to provider registration. */
+  readonly skills: SkillsService
 }
 
 /**

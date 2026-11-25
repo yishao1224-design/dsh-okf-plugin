@@ -12,6 +12,9 @@
  * - A system-prompt context that tells the model which bundle its session uses,
  *   where its folder is, and what its catalog holds. The model reads the pages
  *   with the Harness's own file tools.
+ * - knowledgeAgent's kb-* skills (`skills/`, see `host/skills.ts`) as a DSH
+ *   skill provider, reached through `ctx.inject(['skills'])`, so `/kb-setup`
+ *   and the others work without copying them anywhere.
  * - Two model tools, `wiki_sync_from_code` and `wiki_open_pr` (see
  *   `host/tools.ts`), so an automation task can run Sync from code and Open
  *   pull request without the page. Reached through `ctx.inject(['tools'])`.
@@ -36,6 +39,7 @@ import { GitHubError } from './host/github.ts'
 import { LibraryError, openLibrary } from './host/library.ts'
 import type { Library } from './host/library.ts'
 import { pickFolder } from './host/picker.ts'
+import { bundledSkills, skillProvider } from './host/skills.ts'
 import { RunError } from './host/run.ts'
 import { isEmptyFolder } from './host/starter.ts'
 import { openTeam } from './host/team.ts'
@@ -69,6 +73,12 @@ export interface Config {
   readonly setupSkill?: string
   /** More folders to look for `setupSkill` in (DSH's `customSkillDirs`), searched before the user folders. */
   readonly skillDirs?: readonly string[]
+  /**
+   * Offer the plugin's own copies of knowledgeAgent's kb-* skills (kb-setup,
+   * kb-ingest, kb-query, kb-review, kb-curate, kb-lint) to DSH, at the bundled
+   * rank so a same-named skill in a skill folder wins. Default true.
+   */
+  readonly skills?: boolean
   /** Give the model the Team Wiki tools `wiki_sync_from_code` and `wiki_open_pr`. Default true. */
   readonly tools?: boolean
   /** Team Wiki settings. */
@@ -460,6 +470,9 @@ function count(value: unknown, fallback: number, name: string): number {
  */
 export function apply(ctx: HostContext, config: Config | null | undefined = {}): void {
   const settings = config ?? {}
+  // The kb-* skills beside the built module, once DSH's skill registry has taken them.
+  const skillsRoot = fileURLToPath(new URL('../skills/', import.meta.url))
+  let skillsServed = false
   const library = openLibrary({
     dir: settings.libraryDir ?? join(dshHome(), 'okf'),
     ...settings.gitPath === undefined ? {} : { gitPath: settings.gitPath },
@@ -470,6 +483,10 @@ export function apply(ctx: HostContext, config: Config | null | undefined = {}):
     setupSkill: settings.setupSkill ?? 'kb-setup',
     // DSH's filesystem skill provider order after the project roots (a new folder has none).
     skillRoots: [...settings.skillDirs ?? [], join(dshHome(), 'skills'), join(agentsHome(), 'skills')],
+    bundledSkill: async (name) => {
+      if (!skillsServed) return undefined
+      return (await bundledSkills(skillsRoot)).find(skill => skill.name === name && skill.invocation.userInvocable)?.file
+    },
   })
   const knowledge = {
     indexChars: count(settings.indexChars, 8000, 'indexChars'),
@@ -525,6 +542,18 @@ export function apply(ctx: HostContext, config: Config | null | undefined = {}):
   if (settings.promptContext !== false) {
     ctx.inject(['systemPrompt'], (scope) => {
       scope.systemPrompt.context(sessionContext(library, cache, knowledge))
+    })
+  }
+
+  if (settings.skills !== false) {
+    // Optional, like systemPrompt: without DSH's skill registry the setup falls back to the skill folders.
+    ctx.inject(['skills'], (scope) => {
+      try {
+        scope.skills.registerProvider(skillProvider(skillsRoot))
+        skillsServed = true
+      } catch (error) {
+        console.warn('[okf] could not offer the kb-* skills to DSH:', error)
+      }
     })
   }
 

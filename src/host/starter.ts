@@ -19,8 +19,9 @@
  * person can commit from. Pages carry only the OKF `status` field: no
  * `lifecycle` key is ever written.
  *
- * When DSH can see a setup skill (`kb-setup` from knowledgeAgent, by default)
- * in one of its user skill folders, the plugin hands setup to that skill
+ * When DSH can see a setup skill (`kb-setup` from knowledgeAgent, by default),
+ * in one of its user skill folders or as one this plugin ships (see
+ * `skills.ts`), the plugin hands setup to that skill
  * instead: it only makes the folder a git repository with an empty `okf/`, and
  * answers the `/kb-setup` prompt the new session's composer is prefilled with.
  * The person presses send and the agent sets the bundle up in front of them.
@@ -99,6 +100,8 @@ export interface StarterOptions {
   readonly setupSkill?: string
   /** Where DSH looks for skills, highest priority first. */
   readonly skillRoots?: readonly string[]
+  /** The instruction file of a skill this plugin itself serves to DSH, when it does. */
+  readonly bundledSkill?: (name: string) => Promise<string | undefined>
 }
 
 /** What the starter did. */
@@ -205,7 +208,8 @@ function schemaText(date: string): string {
 export async function initKnowledgeBase(folder: string, name: string, options: StarterOptions): Promise<StarterResult> {
   const root = join(folder, STARTER_BUNDLE)
   const skill = options.setupSkill === undefined || options.setupSkill === '' ? undefined : options.setupSkill
-  const skillFile = skill === undefined ? undefined : await findSkill(skill, options.skillRoots ?? [])
+  // A copy in a skill folder wins in DSH, so it is looked for first; then the plugin's own.
+  const skillFile = skill === undefined ? undefined : await findSkill(skill, options.skillRoots ?? []) ?? await options.bundledSkill?.(skill)
   if (skill !== undefined && skillFile !== undefined) {
     // The skill lays down scripts/okf.py and the bundle itself; the entry needs its folder now.
     await mkdir(root, { recursive: true })

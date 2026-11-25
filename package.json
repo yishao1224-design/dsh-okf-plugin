@@ -16,12 +16,14 @@
     "examples/wiki-auto-complete-ado.yml",
     "examples/wiki-publish-to-ado.yml",
     "templates/hub",
+    "skills",
     "cordis.patch.yml",
     "README.md"
   ],
   "scripts": {
     "build": "node build.mjs",
     "typecheck": "tsc --noEmit",
+    "sync-skills": "node scripts/sync-skills.mjs",
     "smoke": "node scripts/smoke.mjs && node scripts/team-smoke.mjs && node scripts/hub-smoke.mjs && node scripts/ado-smoke.mjs"
   },
   "dsh": {
