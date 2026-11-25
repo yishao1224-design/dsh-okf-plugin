@@ -842,7 +842,9 @@ function maintenanceOf(state: OkfState, sessionId: string): { entry: LibraryEntr
   if (bundleId === undefined || bundleId === null) return undefined
   const entry = state.library.entries.find(candidate => candidate.id === bundleId)
   if (entry?.team === undefined) return undefined
-  const record = state.team.status.data?.maintains.find(candidate => candidate.id === entry.team?.maintainId)
+  const data = state.team.status.data
+  const id = entry.team.maintainId
+  const record = data?.maintains.find(candidate => candidate.id === id) ?? data?.finished?.find(candidate => candidate.id === id)
   return { entry, record }
 }
 
@@ -861,8 +863,35 @@ export function MaintainButton({ store, sessionId, t, compact = false }: Maintai
   useEffect(() => {
     if (found !== undefined && state.team.status.status === 'idle') void store.loadTeam()
   }, [store, found, state.team.status.status])
+  // While its pull request is open, notice when it merges (e.g. on GitHub)
+  // even when the Team Wiki page is not open: on coming back, every few minutes.
+  const waiting = found?.record?.pr !== undefined && found.record.closed === undefined
+  useEffect(() => {
+    if (!waiting) return
+    const check = (): void => { if (store.getSnapshot().team.pulls.status !== 'loading') void store.loadPulls() }
+    window.addEventListener('focus', check)
+    const timer = window.setInterval(check, PR_POLL_MS)
+    return () => {
+      window.removeEventListener('focus', check)
+      window.clearInterval(timer)
+    }
+  }, [store, waiting])
   if (found === undefined) return null
   const pr = found.record?.pr
+  // The round is over (its pull request merged or closed): nothing is left to open.
+  const closed = found.record?.closed
+  if (closed !== undefined) {
+    return (
+      <Button
+        variant={compact ? undefined : 'primary'}
+        style={compact ? { minHeight: 26, borderColor: 'transparent' } : { minHeight: 26 }}
+        title={t('team.roundDoneHint')}
+        disabled
+      >
+        {pr === undefined ? t('team.roundClosed') : t(closed === 'merged' ? 'team.prMerged' : 'team.prClosed', { number: pr.number })}
+      </Button>
+    )
+  }
   return (
     <Button
       variant={compact ? undefined : 'primary'}
@@ -896,8 +925,11 @@ export function OpenPrDialog({ store, t }: OpenPrDialogProps): ReactNode {
  * @returns the dialog.
  */
 function OpenPrBody({ store, state, maintainId, t }: { readonly store: OkfStore, readonly state: OkfState, readonly maintainId: string, readonly t: T }): ReactNode {
-  const record = state.team.status.data?.maintains.find(candidate => candidate.id === maintainId)
   const changes = state.team.changes[maintainId]
+  const data = state.team.status.data
+  const record = data?.maintains.find(candidate => candidate.id === maintainId) ?? data?.finished?.find(candidate => candidate.id === maintainId) ?? changes?.data?.record
+  // Its pull request merged or closed: the round is done, there is nothing to open.
+  const closed = record?.closed ?? changes?.data?.record.closed
   const [title, setTitle] = useState('')
   const [summary, setSummary] = useState('')
   const [busy, setBusy] = useState(false)
@@ -939,6 +971,15 @@ function OpenPrBody({ store, state, maintainId, t }: { readonly store: OkfStore,
           <Button disabled={busy} ariaLabel={t('dialog.close')} onClick={close}>×</Button>
         </div>
         <div style={st('twModalBody')}>
+          {closed !== undefined && (
+            <div style={{ ...st('form'), marginTop: 4 }}>
+              {record?.pr === undefined
+                ? <span style={st('success')}>{t('team.roundClosed')}</span>
+                : <a style={st('twLink')} href={record.pr.url} target="_blank" rel="noreferrer">{t(closed === 'merged' ? 'team.prMerged' : 'team.prClosed', { number: record.pr.number })}</a>}
+              <div style={st('note')}>{t('team.roundDoneHint')}</div>
+            </div>
+          )}
+          {closed === undefined && <>
           {record !== undefined && <div style={st('note')}>{t('team.prBranch', { branch: record.branch, folder: record.wiki })}</div>}
           <div style={{ ...st('group'), marginTop: 8 }}>{t('team.changedFiles', { count: inside.length })}</div>
           {changes?.status === 'loading' && changes.data === undefined && <div style={st('muted')}>{t('preview.loading')}</div>}
@@ -959,10 +1000,11 @@ function OpenPrBody({ store, state, maintainId, t }: { readonly store: OkfStore,
           <p style={st('note')}>{t('team.prExplain')}</p>
           {error !== undefined && <div style={st('error')}>{error}</div>}
           {result !== undefined && <PrResult result={result} t={t} />}
+          </>}
         </div>
         <div style={st('twModalFoot')}>
-          <Button disabled={busy} onClick={close}>{result === undefined ? t('add.cancel') : t('dialog.close')}</Button>
-          <Button variant="primary" disabled={busy} onClick={submit}>{busy ? t('team.prBusy') : record?.pr === undefined ? t('team.openPr') : t('team.updatePrShort')}</Button>
+          <Button disabled={busy} onClick={close}>{result === undefined && closed === undefined ? t('add.cancel') : t('dialog.close')}</Button>
+          {closed === undefined && <Button variant="primary" disabled={busy} onClick={submit}>{busy ? t('team.prBusy') : record?.pr === undefined ? t('team.openPr') : t('team.updatePrShort')}</Button>}
         </div>
       </div>
     </div>

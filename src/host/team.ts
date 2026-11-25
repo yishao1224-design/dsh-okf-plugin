@@ -699,6 +699,7 @@ export function openTeam(options: TeamOptions): Team {
       ...data.refreshedAt === undefined ? {} : { refreshedAt: data.refreshedAt },
       wikis,
       maintains,
+      finished: data.maintains.filter(record => record.closed !== undefined),
       hasToken: data.team === undefined ? false : tokenFor(data.team.provider) !== undefined,
     }
   }
@@ -1384,8 +1385,26 @@ export function openTeam(options: TeamOptions): Team {
   }
 
   const changes = async (id: string): Promise<ChangesAnswer> => {
+    // Its pull request may have merged since the page last looked: a finished
+    // round has nothing left to open, so do not diff its old branch again.
+    const record = await serial(async () => {
+      const current = await load()
+      const found = findRecord(current, id)
+      if (found.closed === undefined && found.pr !== undefined && current.team !== undefined) {
+        const host = pullHost(current.team)
+        const state = host === undefined ? 'open' : await host.pullState(found.pr.number).catch(() => 'open' as const)
+        if (state !== 'open') {
+          Object.assign(found, { closed: state })
+          pullsCache = undefined
+          // A merge moved the base branch: bring main/ up to it, as the pull-request check does.
+          if (state === 'merged') await syncMain(current).catch((error: unknown) => { console.warn('[okf] could not update the base branch after a merge:', error) })
+          await save(current)
+        }
+      }
+      return found
+    })
+    if (record.closed !== undefined) return { record, files: [], uncommitted: 0 }
     const data = await load()
-    const record = findRecord(data, id)
     const base = `origin/${baseOf(data)}`
     const mergeBase = await git(record.workspace, ['merge-base', 'HEAD', base])
     const tracked = parseNameStatus(await git(record.workspace, ['diff', '--name-status', '--no-renames', '-z', mergeBase]))

@@ -407,6 +407,11 @@ status = must(await api('/api/okf/team'), 'status after merge')
 check(status.wikis.some(wiki => wiki.folder === 'payments') && !status.maintains.some(record => record.id === first.record.id) && status.commit === git(emptyOrigin, 'rev-parse', 'main'), `the merged wiki is listed: ${JSON.stringify(status)}`)
 const cached = must(await api('/api/okf/team/pulls'), 'cached pulls')
 check(cached.statusChanged === undefined, 'a cached answer does not report the merge again')
+check(status.finished?.some(record => record.id === first.record.id && record.closed === 'merged') === true, `the merged round is listed as finished: ${JSON.stringify(status.finished)}`)
+{
+  const done = must(await api('/api/okf/team/changes', { query: { id: first.record.id } }), 'changes after merge')
+  check(done.record.closed === 'merged' && done.files.length === 0, `a merged round has nothing left to open: ${JSON.stringify(done.files.map(file => file.path))}`)
+}
 
 // A finished workspace of the older one-folder-per-round layout is tidied on refresh; one with uncommitted work stays.
 {
@@ -494,6 +499,18 @@ check(again2.created === false && again2.record.id === round2.record.id, 'an ope
   writeFileSync(join(again.workspace, 'scripts', 'okf.py'), newer)
   must(await api('/api/okf/team/maintain', { method: 'POST', body: { folder: 'glossary' } }), 'maintain with a newer hub okf.py')
   check(readFileSync(join(again.workspace, 'scripts', 'okf.py'), 'utf8') === newer, 'a newer hub okf.py is kept')
+  // Merged on GitHub while the session is open: the dialog's changes notice it without the Team Wiki page.
+  {
+    const merged = pulls.find(pull => pull.number === refreshed.pr?.number)
+    check(merged !== undefined, `the refreshed round has a pull request: ${JSON.stringify(refreshed.pr)}`)
+    if (merged !== undefined) Object.assign(merged, { state: 'closed', merged: true })
+    const done = must(await api('/api/okf/team/changes', { query: { id: again.record.id } }), 'changes after a merge on GitHub')
+    check(done.record.closed === 'merged' && done.files.length === 0, `a round merged on GitHub has nothing left to open: ${JSON.stringify({ closed: done.record.closed, files: done.files.map(file => file.path) })}`)
+    const after = must(await api('/api/okf/team'), 'status after a merge seen by changes')
+    check(!after.maintains.some(record => record.id === again.record.id) && after.finished?.some(record => record.id === again.record.id) === true, 'the round moves to finished')
+    const refused = await api('/api/okf/team/open-pr', { method: 'POST', body: { id: again.record.id } })
+    check(refused.status === 409, `a finished round cannot open another pull request: ${JSON.stringify(refused.body)}`)
+  }
 }
 
 server.close()
