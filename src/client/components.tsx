@@ -297,9 +297,10 @@ function AddForm({ store, t, onDone }: { readonly store: OkfStore, readonly t: T
     setError(undefined)
     const work: Promise<LibraryEntry> = tab === 'git'
       ? store.fetchBundle({ url, ...ref.trim() === '' ? {} : { ref: ref.trim() }, ...(override ?? path).trim() === '' ? {} : { path: (override ?? path).trim() }, ...id.trim() === '' ? {} : { id: id.trim() } })
-      // An empty folder becomes a new knowledge base, then opens as its editing workspace.
+      // An empty folder becomes a new knowledge base, then opens as its editing workspace
+      // (with the kb-setup skill prefilled in the composer when DSH has that skill).
       : store.addLocal(override ?? local, id.trim() === '' ? undefined : id.trim(), true).then(async (answer) => {
-          if (answer.created !== undefined) await store.editAsWorkspace(answer.entry.id).catch(() => undefined)
+          if (answer.created !== undefined) await store.editAsWorkspace(answer.entry.id, answer.created.prompt).catch(() => undefined)
           return answer.entry
         })
     work.then((entry) => { setBusy(false); onDone(entry) }, (failure: unknown) => { setBusy(false); setError(failure as Error) })

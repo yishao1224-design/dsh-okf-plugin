@@ -60,6 +60,15 @@ export interface Config {
   readonly indexChars?: number
   /** Tell the model about the session's bundle. Default true. */
   readonly promptContext?: boolean
+  /**
+   * The skill that sets up a new knowledge base in an empty local folder,
+   * when DSH has it in `<DSH home>/skills`, `~/.agents/skills` or `skillDirs`:
+   * the new session's composer is then prefilled with `/<setupSkill>`.
+   * Default `kb-setup` (knowledgeAgent's); `''` always uses the plugin's own setup.
+   */
+  readonly setupSkill?: string
+  /** More folders to look for `setupSkill` in (DSH's `customSkillDirs`), searched before the user folders. */
+  readonly skillDirs?: readonly string[]
   /** Give the model the Team Wiki tools `wiki_sync_from_code` and `wiki_open_pr`. Default true. */
   readonly tools?: boolean
   /** Team Wiki settings. */
@@ -100,6 +109,15 @@ export interface TeamConfigRow {
 export function dshHome(): string {
   const env = process.env.DSH_HOME?.trim()
   return env === undefined || env === '' ? join(homedir(), '.dsh') : env
+}
+
+/**
+ * The shared agent home DSH scans for skills: `$DSH_AGENTS_HOME`, else `~/.agents`.
+ * @returns the folder.
+ */
+export function agentsHome(): string {
+  const env = process.env.DSH_AGENTS_HOME?.trim()
+  return env === undefined || env === '' ? join(homedir(), '.agents') : env
 }
 
 /** Headers every answer carries. */
@@ -449,6 +467,9 @@ export function apply(ctx: HostContext, config: Config | null | undefined = {}):
     python: settings.team?.python ?? (process.platform === 'win32' ? 'python' : 'python3'),
     // An empty local folder gets the same toolchain Set up the hub writes.
     okfScript: fileURLToPath(new URL('../templates/hub/scripts/okf.py', import.meta.url)),
+    setupSkill: settings.setupSkill ?? 'kb-setup',
+    // DSH's filesystem skill provider order after the project roots (a new folder has none).
+    skillRoots: [...settings.skillDirs ?? [], join(dshHome(), 'skills'), join(agentsHome(), 'skills')],
   })
   const knowledge = {
     indexChars: count(settings.indexChars, 8000, 'indexChars'),

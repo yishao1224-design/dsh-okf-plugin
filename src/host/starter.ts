@@ -18,8 +18,14 @@
  * repository (no commit) when git is available, so it is a workspace the
  * person can commit from. Pages carry only the OKF `status` field: no
  * `lifecycle` key is ever written.
+ *
+ * When DSH can see a setup skill (`kb-setup` from knowledgeAgent, by default)
+ * in one of its user skill folders, the plugin hands setup to that skill
+ * instead: it only makes the folder a git repository with an empty `okf/`, and
+ * answers the `/kb-setup` prompt the new session's composer is prefilled with.
+ * The person presses send and the agent sets the bundle up in front of them.
  */
-import { copyFile, mkdir, readdir, stat, writeFile } from 'node:fs/promises'
+import { copyFile, mkdir, readdir, readFile, stat, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { run } from './run.ts'
 
@@ -43,6 +49,43 @@ export async function isEmptyFolder(folder: string): Promise<boolean> {
   return names.every(name => IGNORABLE.has(name.toLowerCase()))
 }
 
+/**
+ * Find a user-invocable skill the way DSH's filesystem skill provider does:
+ * `<root>/<name>/SKILL.md` or `<root>/<name>.md`, first root wins. A skill
+ * that sets `user-invocable: false` cannot be typed as `/name`, so it is skipped.
+ * @param name - the skill name.
+ * @param roots - skill folders, highest priority first.
+ * @returns the skill's instruction file, or undefined.
+ */
+export async function findSkill(name: string, roots: readonly string[]): Promise<string | undefined> {
+  for (const root of roots) {
+    for (const file of [join(root, name, 'SKILL.md'), join(root, `${name}.md`)]) {
+      let text: string
+      try {
+        text = await readFile(file, 'utf8')
+      } catch {
+        continue
+      }
+      const front = /^\uFEFF?---\r?\n([\s\S]*?)\r?\n---/.exec(text)?.[1]
+      if (front === undefined) continue
+      const named = /^name:\s*["']?([^"'\r\n]+?)["']?\s*$/m.exec(front)?.[1]
+      if (named !== name) continue
+      if (/^user-invocable:\s*["']?(false|no|off|0)["']?\s*$/im.test(front)) continue
+      return file
+    }
+  }
+  return undefined
+}
+
+/**
+ * The composer text that runs the setup skill in the new workspace.
+ * @param skill - the skill name.
+ * @returns the prompt.
+ */
+export function setupPrompt(skill: string): string {
+  return `/${skill} Set up the new knowledge base in this folder. Use the default bundle folder ${STARTER_BUNDLE}/ (it exists and is empty); do not ask for another name.`
+}
+
 /** What the starter needs. */
 export interface StarterOptions {
   /** The Python executable that runs okf.py. */
@@ -52,14 +95,26 @@ export interface StarterOptions {
   /** The git executable. */
   readonly git: string
   readonly timeoutMs: number
+  /** A setup skill to hand the work to when it exists, e.g. `kb-setup`; undefined or '' never does. */
+  readonly setupSkill?: string
+  /** Where DSH looks for skills, highest priority first. */
+  readonly skillRoots?: readonly string[]
 }
 
 /** What the starter did. */
 export interface StarterResult {
   /** The new bundle root. */
   readonly root: string
-  /** True when okf.py wrote the bundle; false when the built-in skeleton did. */
-  readonly toolchainRan: boolean
+  /**
+   * Who sets the bundle up: `skill` (left to the setup skill, whose prompt
+   * is in `prompt`), `toolchain` (okf.py init ran), or `skeleton` (the
+   * plugin's built-in files, when Python could not run okf.py).
+   */
+  readonly setup: 'skill' | 'toolchain' | 'skeleton'
+  /** The composer text for the new session: the setup skill's invocation. */
+  readonly prompt?: string
+  /** The setup skill's instruction file, when `setup` is `skill`. */
+  readonly skillFile?: string
   /** True when the folder became a git repository. */
   readonly gitInit: boolean
 }
@@ -149,6 +204,14 @@ function schemaText(date: string): string {
  */
 export async function initKnowledgeBase(folder: string, name: string, options: StarterOptions): Promise<StarterResult> {
   const root = join(folder, STARTER_BUNDLE)
+  const skill = options.setupSkill === undefined || options.setupSkill === '' ? undefined : options.setupSkill
+  const skillFile = skill === undefined ? undefined : await findSkill(skill, options.skillRoots ?? [])
+  if (skill !== undefined && skillFile !== undefined) {
+    // The skill lays down scripts/okf.py and the bundle itself; the entry needs its folder now.
+    await mkdir(root, { recursive: true })
+    const gitInit = await gitInitOnce(folder, options)
+    return { root, setup: 'skill', prompt: setupPrompt(skill), skillFile, gitInit }
+  }
   const script = join(folder, 'scripts', 'okf.py')
   let toolchainRan = false
   if (options.okfScript !== undefined && await isFile(options.okfScript)) {
@@ -172,12 +235,19 @@ export async function initKnowledgeBase(folder: string, name: string, options: S
   }
   if (!(await isFile(join(folder, 'AGENTS.md')))) await writeFile(join(folder, 'AGENTS.md'), agentsText(name))
   if (!(await isFile(join(folder, '.gitignore')))) await writeFile(join(folder, '.gitignore'), '__pycache__/\n*.pyc\n.DS_Store\nThumbs.db\n')
-  let gitInit = await stat(join(folder, '.git')).then(() => true, () => false)
-  if (!gitInit) {
-    gitInit = await run(options.git, ['init', '--quiet'], { cwd: folder, timeoutMs: options.timeoutMs }).then(() => true, (error: unknown) => {
-      console.warn('[okf] git init failed; the new knowledge base is not a repository:', error)
-      return false
-    })
-  }
-  return { root, toolchainRan, gitInit }
+  return { root, setup: toolchainRan ? 'toolchain' : 'skeleton', gitInit: await gitInitOnce(folder, options) }
+}
+
+/**
+ * Make a folder a git repository unless it is one; never fails.
+ * @param folder - the folder.
+ * @param options - git settings.
+ * @returns whether the folder is a repository afterwards.
+ */
+async function gitInitOnce(folder: string, options: StarterOptions): Promise<boolean> {
+  if (await stat(join(folder, '.git')).then(() => true, () => false)) return true
+  return run(options.git, ['init', '--quiet'], { cwd: folder, timeoutMs: options.timeoutMs }).then(() => true, (error: unknown) => {
+    console.warn('[okf] git init failed; the new knowledge base is not a repository:', error)
+    return false
+  })
 }

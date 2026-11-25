@@ -81,6 +81,10 @@ export interface LibraryOptions {
   readonly python?: string
   /** The plugin's own okf.py, copied into a new knowledge base. */
   readonly okfScript?: string
+  /** A skill that sets up a new knowledge base when DSH has it (default none); see `starter.ts`. */
+  readonly setupSkill?: string
+  /** DSH's skill folders, highest priority first, searched for `setupSkill`. */
+  readonly skillRoots?: readonly string[]
 }
 
 /** Environment variables a token is read from, most specific first. */
@@ -358,9 +362,11 @@ export function openLibrary(options: LibraryOptions): Library {
           ...options.okfScript === undefined ? {} : { okfScript: options.okfScript },
           git: options.gitPath ?? 'git',
           timeoutMs: options.gitTimeoutMs ?? 300_000,
+          ...options.setupSkill === undefined ? {} : { setupSkill: options.setupSkill },
+          ...options.skillRoots === undefined ? {} : { skillRoots: options.skillRoots },
         })
         root = made.root
-        created = { workspace: canonical(wanted), toolchainRan: made.toolchainRan, gitInit: made.gitInit }
+        created = { workspace: canonical(wanted), setup: made.setup, gitInit: made.gitInit, ...made.prompt === undefined ? {} : { prompt: made.prompt } }
       } else if (!await isBundleRoot(wanted)) {
         const roots = await findLocalBundleRoots(wanted)
         if (roots.length === 0) throw new LibraryError('no-bundle', request.initialize === true ? 'No OKF bundle in this folder, and it is not empty. Choose a folder holding a bundle, or an empty folder to start a new one.' : 'No OKF bundle in this folder: nothing holds a SCHEMA.md or an index.md with okf_version.', 422)

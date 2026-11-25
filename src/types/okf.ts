@@ -139,8 +139,15 @@ export interface AddLocalAnswer {
   readonly created?: {
     /** The folder that is now the editing workspace. */
     readonly workspace: string
-    /** False when Python could not run okf.py and the built-in skeleton was written instead. */
-    readonly toolchainRan: boolean
+    /**
+     * `skill`: DSH has the setup skill (kb-setup), so the folder holds only an
+     * empty `okf/` and `prompt` runs the skill in the new session.
+     * `toolchain`: okf.py init wrote the bundle. `skeleton`: Python could not
+     * run, so the plugin's built-in starter files were written.
+     */
+    readonly setup: 'skill' | 'toolchain' | 'skeleton'
+    /** Text to prefill the new session's composer with (the setup skill's `/name` invocation). */
+    readonly prompt?: string
     /** False when git was unavailable, so the folder is not a repository yet. */
     readonly gitInit: boolean
   }

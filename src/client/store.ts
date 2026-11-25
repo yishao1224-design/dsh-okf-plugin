@@ -213,9 +213,10 @@ export interface OkfStore {
   /**
    * Make a bundle editable in place, then open a session in its folder with the
    * bundle attached. Opening needs DSH's Workspace services; without them the
-   * outcome carries the folder for the user to add by hand.
+   * outcome carries the folder for the user to add by hand. With `prompt`,
+   * the session's composer is prefilled with it (the person presses send).
    */
-  editAsWorkspace(id: string): Promise<EditWorkspaceOutcome>
+  editAsWorkspace(id: string, prompt?: string): Promise<EditWorkspaceOutcome>
   summary(id: string): Promise<BundleSummary>
   page(id: string, path: string): Promise<PageContent>
   /** Load the Team Wiki status (connected repository, project wikis). */
@@ -456,7 +457,7 @@ export function createOkfStore(fetcher: Fetcher = (input, init) => globalThis.fe
       forget(id)
       await refreshLibrary()
     },
-    async editAsWorkspace(id) {
+    async editAsWorkspace(id, prompt) {
       const answer = await call<EditWorkspaceAnswer>(fetcher, ROUTES.editWorkspace, { method: 'POST', body: { id }, timeoutMs: GIT_TIMEOUT_MS })
       await refreshLibrary()
       const services = navigation()
@@ -468,7 +469,12 @@ export function createOkfStore(fetcher: Fetcher = (input, init) => globalThis.fe
         await waitForWorkspace(services.workspaces, workspace.workspaceId)
         const sessionId = await services.uiWorkspace.connectWorkspace(workspace.workspaceId)
         await select(sessionId, answer.entry.id)
-        services.uiWorkspace.openSession(sessionId)
+        if (prompt !== undefined && services.uiWorkspace.startSession !== undefined) {
+          // Reuses the same blank Session and fills its composer.
+          services.uiWorkspace.startSession(workspace.workspaceId, { prompt, clearPreviousDraft: true })
+        } else {
+          services.uiWorkspace.openSession(sessionId)
+        }
         set({ dialog: { open: false } })
         return { entry: answer.entry, workspace: answer.workspace, opened: true }
       } catch (error) {
