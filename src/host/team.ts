@@ -724,6 +724,18 @@ export function openTeam(options: TeamOptions): Team {
     delete data.empty
   }
 
+  /**
+   * After a round's pull request merged, move its workspace's `origin/<base>`
+   * to the merged base branch, so a diff of the branch against it (the
+   * session's Local changes view) no longer lists what already merged.
+   */
+  const fetchBaseInto = async (data: TeamFile, record: MaintainRecord): Promise<void> => {
+    const team = needTeam(data)
+    const base = baseOf(data)
+    await git(record.workspace, ['fetch', '--quiet', 'origin', `+refs/heads/${base}:refs/remotes/origin/${base}`], tokenFor(team.provider))
+      .catch((error: unknown) => { console.warn(`[okf] could not fetch origin/${base} into ${record.workspace}:`, error) })
+  }
+
   const connect = (request: { url: string, ref?: string, root?: string }): Promise<TeamStatus> => serial(async () => {
     const remote = (() => {
       try {
@@ -901,7 +913,10 @@ export function openTeam(options: TeamOptions): Team {
         if (state === 'open') continue
         Object.assign(record, { closed: state })
         changed = true
-        if (state === 'merged') merged = true
+        if (state === 'merged') {
+          merged = true
+          await fetchBaseInto(data, record)
+        }
       }
       // A merged pull request moved the base branch: bring main/ up to it so
       // the wiki list shows what merged without a manual refresh.
@@ -1397,7 +1412,10 @@ export function openTeam(options: TeamOptions): Team {
           Object.assign(found, { closed: state })
           pullsCache = undefined
           // A merge moved the base branch: bring main/ up to it, as the pull-request check does.
-          if (state === 'merged') await syncMain(current).catch((error: unknown) => { console.warn('[okf] could not update the base branch after a merge:', error) })
+          if (state === 'merged') {
+            await syncMain(current).catch((error: unknown) => { console.warn('[okf] could not update the base branch after a merge:', error) })
+            await fetchBaseInto(current, found)
+          }
           await save(current)
         }
       }
