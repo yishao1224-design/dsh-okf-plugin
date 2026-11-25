@@ -8,8 +8,8 @@
  */
 import { relative, ROUTES } from '../types/okf.ts'
 import type {
-  BundleSummary, ChangesAnswer, EditWorkspaceAnswer, FetchRequest, LibraryEntry, MaintainAnswer, OpenPrAnswer, PageContent, PublishAnswer, ReviewAnswer, SyncAnswer,
-  PullsAnswer, SessionSelection, TeamStatus, WikiDetail,
+  AddLocalAnswer, BundleSummary, ChangesAnswer, EditWorkspaceAnswer, FetchRequest, LibraryEntry, MaintainAnswer, OpenPrAnswer, PageContent, PublishAnswer, ReviewAnswer, SyncAnswer,
+  PickFolderAnswer, PullsAnswer, SessionSelection, TeamStatus, WikiDetail,
 } from '../types/okf.ts'
 import type { LayoutService, UiWorkspaceService, WorkspacesService, WorkspaceView } from '../types/contract.ts'
 
@@ -17,6 +17,8 @@ import type { LayoutService, UiWorkspaceService, WorkspacesService, WorkspaceVie
 export const REQUEST_TIMEOUT_MS = 15_000
 /** Deadline for a clone or update, which can take a while on a big repository. */
 export const GIT_TIMEOUT_MS = 330_000
+/** Deadline for the folder dialog: a person is choosing (the Host gives up at 15 minutes). */
+export const PICK_TIMEOUT_MS = 16 * 60_000
 
 /** An error answer from the Host, or a transport failure. */
 export class ApiFailure extends Error {
@@ -199,15 +201,22 @@ export interface OkfStore {
   preview(bundleId: string | undefined): void
   openPage(pagePath: string | undefined): void
   fetchBundle(request: FetchRequest): Promise<LibraryEntry>
-  addLocal(path: string, id?: string): Promise<LibraryEntry>
+  /**
+   * Add a local folder. With `initialize`, an empty folder becomes a new
+   * knowledge base first (the answer's `created` is then set).
+   */
+  addLocal(path: string, id?: string, initialize?: boolean): Promise<AddLocalAnswer>
+  /** Open the system folder dialog on the Host's machine. */
+  pickFolder(start?: string): Promise<PickFolderAnswer>
   update(id: string, force?: boolean): Promise<{ entry: LibraryEntry, changed: boolean }>
   remove(id: string, deleteFiles: boolean): Promise<void>
   /**
    * Make a bundle editable in place, then open a session in its folder with the
    * bundle attached. Opening needs DSH's Workspace services; without them the
-   * outcome carries the folder for the user to add by hand.
+   * outcome carries the folder for the user to add by hand. With `prompt`,
+   * the session's composer is prefilled with it (the person presses send).
    */
-  editAsWorkspace(id: string): Promise<EditWorkspaceOutcome>
+  editAsWorkspace(id: string, prompt?: string): Promise<EditWorkspaceOutcome>
   summary(id: string): Promise<BundleSummary>
   page(id: string, path: string): Promise<PageContent>
   /** Load the Team Wiki status (connected repository, project wikis). */
@@ -432,11 +441,12 @@ export function createOkfStore(fetcher: Fetcher = (input, init) => globalThis.fe
       await refreshLibrary()
       return answer.entry
     },
-    async addLocal(path, id) {
-      const answer = await call<{ entry: LibraryEntry }>(fetcher, ROUTES.addLocal, { method: 'POST', body: { path, ...id === undefined ? {} : { id } } })
+    async addLocal(path, id, initialize = false) {
+      const answer = await call<AddLocalAnswer>(fetcher, ROUTES.addLocal, { method: 'POST', body: { path, ...id === undefined ? {} : { id }, ...initialize ? { initialize: true } : {} }, ...initialize ? { timeoutMs: GIT_TIMEOUT_MS } : {} })
       await refreshLibrary()
-      return answer.entry
+      return answer
     },
+    pickFolder: start => call<PickFolderAnswer>(fetcher, ROUTES.pickFolder, { method: 'POST', body: start === undefined || start.trim() === '' ? {} : { start: start.trim() }, timeoutMs: PICK_TIMEOUT_MS }),
     async update(id, force = false) {
       const answer = await call<{ entry: LibraryEntry, changed: boolean }>(fetcher, ROUTES.update, { method: 'POST', body: { id, force }, timeoutMs: GIT_TIMEOUT_MS })
       await refreshLibrary()
@@ -447,7 +457,7 @@ export function createOkfStore(fetcher: Fetcher = (input, init) => globalThis.fe
       forget(id)
       await refreshLibrary()
     },
-    async editAsWorkspace(id) {
+    async editAsWorkspace(id, prompt) {
       const answer = await call<EditWorkspaceAnswer>(fetcher, ROUTES.editWorkspace, { method: 'POST', body: { id }, timeoutMs: GIT_TIMEOUT_MS })
       await refreshLibrary()
       const services = navigation()
@@ -459,7 +469,12 @@ export function createOkfStore(fetcher: Fetcher = (input, init) => globalThis.fe
         await waitForWorkspace(services.workspaces, workspace.workspaceId)
         const sessionId = await services.uiWorkspace.connectWorkspace(workspace.workspaceId)
         await select(sessionId, answer.entry.id)
-        services.uiWorkspace.openSession(sessionId)
+        if (prompt !== undefined && services.uiWorkspace.startSession !== undefined) {
+          // Reuses the same blank Session and fills its composer.
+          services.uiWorkspace.startSession(workspace.workspaceId, { prompt, clearPreviousDraft: true })
+        } else {
+          services.uiWorkspace.openSession(sessionId)
+        }
         set({ dialog: { open: false } })
         return { entry: answer.entry, workspace: answer.workspace, opened: true }
       } catch (error) {

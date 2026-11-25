@@ -124,6 +124,47 @@ export interface AddLocalRequest {
   readonly path: string
   readonly id?: string
   readonly name?: string
+  /**
+   * When the folder is empty, make it a new knowledge base (an editing
+   * workspace holding a fresh OKF bundle in `okf/` and `scripts/okf.py`)
+   * instead of refusing it. Default false.
+   */
+  readonly initialize?: boolean
+}
+
+/** What add-local answers. */
+export interface AddLocalAnswer {
+  readonly entry: LibraryEntry
+  /** Set when the folder was empty and became a new knowledge base; `entry.workspace` is then that folder. */
+  readonly created?: {
+    /** The folder that is now the editing workspace. */
+    readonly workspace: string
+    /**
+     * `skill`: DSH has the setup skill (kb-setup), so the folder holds only an
+     * empty `okf/` and `prompt` runs the skill in the new session.
+     * `toolchain`: okf.py init wrote the bundle. `skeleton`: Python could not
+     * run, so the plugin's built-in starter files were written.
+     */
+    readonly setup: 'skill' | 'toolchain' | 'skeleton'
+    /** Text to prefill the new session's composer with (the setup skill's `/name` invocation). */
+    readonly prompt?: string
+    /** False when git was unavailable, so the folder is not a repository yet. */
+    readonly gitInit: boolean
+  }
+}
+
+/** POST body of the pick-folder route. */
+export interface PickFolderRequest {
+  /** A folder to open the dialog at. */
+  readonly start?: string
+}
+
+/** What pick-folder answers. */
+export interface PickFolderAnswer {
+  /** The chosen folder, or null when the person cancelled. */
+  readonly path: string | null
+  /** What the chosen folder holds: a bundle (or bundles), nothing at all, or neither. */
+  readonly kind?: 'bundle' | 'empty' | 'other'
 }
 
 /** What the edit-workspace route answers. */
@@ -154,6 +195,8 @@ export const ROUTES = {
   update: `${API_BASE}/update`,
   /** POST `AddLocalRequest`: register a bundle already on disk. */
   addLocal: `${API_BASE}/add-local`,
+  /** POST `PickFolderRequest`: open the system folder dialog on the Host's machine. */
+  pickFolder: `${API_BASE}/pick-folder`,
   /** POST `{ id }`: make a bundle editable in place, in a workspace of its own. */
   editWorkspace: `${API_BASE}/edit-workspace`,
   /** POST `{ id, deleteFiles? }`: forget an entry. */

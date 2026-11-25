@@ -103,9 +103,9 @@ host.apply({
     injected.push(deps.join(','))
     callback({ systemPrompt: { context: (c) => { contexts.push(c); return () => {} } }, tools: { register: (t) => { tools.push(t); return () => {} } } })
   },
-}, { libraryDir, indexChars: 2000 })
+}, { libraryDir, indexChars: 2000, skills: false })
 
-check(routes.size === 24, `expected 24 routes, saw ${String(routes.size)}`)
+check(routes.size === 25, `expected 25 routes, saw ${String(routes.size)}`)
 check([...routes.values()].every(route => route.path.startsWith('/api/okf/') && route.requestBody === 'buffered'), 'every route must sit under /api/okf with a buffered body')
 check(injected.join('|') === 'systemPrompt|tools', `optional services ${injected.join('|')}`)
 check(contexts.length === 1 && contexts[0].name === 'okf:session-bundle' && typeof contexts[0].text === 'function', 'one prompt context with a text callback')
@@ -223,6 +223,79 @@ answer = await api('/api/okf/add-local', { method: 'POST', body: { path: join(lo
 check(answer.status === 409, 'adding the same folder twice answers 409')
 answer = await api('/api/okf/add-local', { method: 'POST', body: { path: join(work, 'missing') } })
 check(answer.status === 422 && answer.body.error.code === 'bad-path', 'a missing local folder answers 422')
+// An empty folder: refused without initialize, a new knowledge base with it.
+const blank = join(work, 'blank-kb')
+mkdirSync(blank)
+answer = await api('/api/okf/add-local', { method: 'POST', body: { path: blank } })
+check(answer.status === 422 && answer.body.error.code === 'no-bundle' && readdirSync(blank).length === 0, `an empty folder is refused without initialize ${JSON.stringify(answer.body)}`)
+answer = await api('/api/okf/add-local', { method: 'POST', body: { path: blank, initialize: true } })
+check(answer.status === 200 && answer.body.entry.root === join(blank, 'okf') && answer.body.entry.workspace === realpathSync.native(blank) && answer.body.created?.workspace === realpathSync.native(blank), `initialize makes a knowledge base ${JSON.stringify(answer.body)}`)
+check(answer.body.created?.setup === 'toolchain' && answer.body.created?.prompt === undefined && answer.body.created?.gitInit === true, `okf.py init and git init ran ${JSON.stringify(answer.body.created)}`)
+for (const file of ['okf/SCHEMA.md', 'okf/index.md', 'okf/log.md', 'okf/concepts', 'okf/sources', 'scripts/okf.py', 'AGENTS.md', '.gitignore', '.git']) check(existsSync(join(blank, file)), `the new knowledge base has ${file}`)
+check(readFileSync(join(blank, 'okf', 'index.md'), 'utf8').includes('okf_version'), 'the new index.md carries okf_version')
+check(!/^lifecycle:/m.test(readFileSync(join(blank, 'okf', 'SCHEMA.md'), 'utf8')), 'the new SCHEMA.md has no lifecycle key')
+check(execFileSync('python3', [join(blank, 'scripts', 'okf.py'), 'lint'], { cwd: blank, encoding: 'utf8' }) !== undefined, 'the new bundle lints clean')
+answer = await api('/api/okf/edit-workspace', { method: 'POST', body: { id: 'blank-kb-okf' } })
+check(answer.status === 200 && answer.body.created === false && answer.body.workspace === realpathSync.native(blank), `the new knowledge base is already editable ${JSON.stringify(answer.body)}`)
+answer = await api('/api/okf/add-local', { method: 'POST', body: { path: blank, initialize: true } })
+check(answer.status === 409, `a folder that is already a knowledge base is not added twice ${JSON.stringify(answer.body)}`)
+const notEmpty = join(work, 'not-empty')
+write(notEmpty, { 'notes.txt': 'mine\n' })
+answer = await api('/api/okf/add-local', { method: 'POST', body: { path: notEmpty, initialize: true } })
+check(answer.status === 422 && answer.body.error.code === 'no-bundle' && readdirSync(notEmpty).length === 1, `a folder with files of its own is never initialized ${JSON.stringify(answer.body)}`)
+await api('/api/okf/remove', { method: 'POST', body: { id: 'blank-kb-okf' } })
+// The plugin's own kb-* skills, offered to DSH's skill registry; with them, setup goes to /kb-setup.
+{
+  const providers = []
+  const skillRoutes = new Map()
+  const skillInjected = []
+  host.apply({
+    connection: { fetch: { register: (route) => { skillRoutes.set(route.path, route); return async () => {} } } },
+    inject: (deps, callback) => {
+      skillInjected.push(deps.join(','))
+      callback({ systemPrompt: { context: () => () => {} }, tools: { register: () => () => {} }, skills: { registerProvider: (create) => { providers.push(create({ signal: new AbortController().signal, invalidate: () => {} })); return () => {} } } })
+    },
+  }, { libraryDir: join(work, 'skills-library'), skillDirs: [join(work, 'no-skills-here')] })
+  check(skillInjected.join('|') === 'systemPrompt|skills|tools' && providers.length === 1 && providers[0].name === 'dsh-okf', `the skill provider registers ${skillInjected.join('|')}`)
+  const listed = await providers[0].list({ cwd: work })
+  const names = listed.map(candidate => candidate.name).join(',')
+  check(names === 'kb-curate,kb-ingest,kb-lint,kb-query,kb-review,kb-setup', `bundled skills ${names}`)
+  check(listed.every(candidate => candidate.rank === 600 && candidate.source === 'bundled' && candidate.provider === 'dsh-okf' && candidate.invocation.userInvocable && candidate.invocation.modelInvocable && candidate.description.length > 20 && existsSync(candidate.path)), 'bundled skills sit at the bundled rank with a description and a file')
+  const setupSkill = listed.find(candidate => candidate.name === 'kb-setup')
+  const loaded = await providers[0].get(setupSkill, { cwd: work })
+  check(loaded?.content.startsWith('# kb-setup') === true && !loaded.content.includes('\nname: kb-setup') && existsSync(join(loaded.resourceBase.path, 'okf.py')), 'kb-setup loads without its frontmatter, with okf.py beside it')
+  check(readFileSync(join(root, 'skills', 'kb-setup', 'okf.py'), 'utf8') === readFileSync(join(root, 'templates', 'hub', 'scripts', 'okf.py'), 'utf8'), 'skills/kb-setup/okf.py is the same toolchain as templates/hub/scripts/okf.py (run npm run sync-skills)')
+  check(await providers[0].get({ ...setupSkill, locator: join(work, 'gone') }, { cwd: work }) === undefined, 'a skill that went away loads as undefined')
+  const fresh = join(work, 'bundled-kb')
+  mkdirSync(fresh)
+  const response = await skillRoutes.get('/api/okf/add-local').fetch(new Request('http://127.0.0.1:3080/api/okf/add-local', { method: 'POST', body: JSON.stringify({ path: fresh, initialize: true }), headers: { 'content-type': 'application/json' } }))
+  const made = await response.json()
+  check(response.status === 200 && made.created?.setup === 'skill' && made.created?.prompt?.startsWith('/kb-setup ') === true && readdirSync(join(fresh, 'okf')).length === 0 && !existsSync(join(fresh, 'scripts')), `with the bundled kb-setup the session gets /kb-setup ${JSON.stringify(made)}`)
+}
+// With a kb-setup skill DSH can see, setup is left to the skill: an empty okf/ and the /kb-setup prompt.
+{
+  const skills = join(work, 'skill-home')
+  write(skills, {
+    'kb-setup/SKILL.md': '---\nname: kb-setup\ndescription: Scaffold the OKF bundle.\n---\n# kb-setup\n',
+    'kb-hidden/SKILL.md': '---\nname: kb-hidden\ndescription: Not typed by people.\nuser-invocable: false\n---\n',
+  })
+  const skilled = host.openLibrary({ dir: join(work, 'skill-library'), setupSkill: 'kb-setup', skillRoots: [join(work, 'no-such-root'), skills] })
+  const target = join(work, 'skill-kb')
+  mkdirSync(target)
+  const made = await skilled.addLocal({ path: target, initialize: true })
+  check(made.created?.setup === 'skill' && made.created?.prompt?.startsWith('/kb-setup ') === true && made.entry.root === join(target, 'okf') && made.entry.workspace === realpathSync.native(target), `kb-setup takes the setup ${JSON.stringify(made)}`)
+  check(existsSync(join(target, '.git')) && readdirSync(join(target, 'okf')).length === 0 && !existsSync(join(target, 'scripts')), 'with kb-setup the plugin writes only an empty okf/ and git init')
+  const hidden = host.openLibrary({ dir: join(work, 'hidden-library'), setupSkill: 'kb-hidden', skillRoots: [skills] })
+  const plain = join(work, 'hidden-kb')
+  mkdirSync(plain)
+  const fallback = await hidden.addLocal({ path: plain, initialize: true })
+  check(fallback.created?.setup === 'skeleton' && fallback.created?.prompt === undefined && existsSync(join(plain, 'okf', 'SCHEMA.md')), `a skill people cannot invoke is not used ${JSON.stringify(fallback.created)}`)
+}
+// The folder dialog: this test machine has none, which answers 501, not a hang.
+if (process.platform === 'linux' && !['zenity', 'kdialog'].some(name => { try { execFileSync('which', [name], { stdio: 'ignore' }); return true } catch { return false } })) {
+  answer = await api('/api/okf/pick-folder', { method: 'POST', body: {} })
+  check(answer.status === 501 && answer.body.error.code === 'no-picker', `pick-folder without a dialog answers 501 ${JSON.stringify(answer.body)}`)
+}
 answer = await api('/api/okf/update', { method: 'POST', body: { id: 'local-project-okf' } })
 check(answer.status === 400 && answer.body.error.code === 'not-git', 'a local entry cannot be updated')
 

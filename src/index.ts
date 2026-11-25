@@ -12,6 +12,9 @@
  * - A system-prompt context that tells the model which bundle its session uses,
  *   where its folder is, and what its catalog holds. The model reads the pages
  *   with the Harness's own file tools.
+ * - knowledgeAgent's kb-* skills (`skills/`, see `host/skills.ts`) as a DSH
+ *   skill provider, reached through `ctx.inject(['skills'])`, so `/kb-setup`
+ *   and the others work without copying them anywhere.
  * - Two model tools, `wiki_sync_from_code` and `wiki_open_pr` (see
  *   `host/tools.ts`), so an automation task can run Sync from code and Open
  *   pull request without the page. Reached through `ctx.inject(['tools'])`.
@@ -29,19 +32,22 @@
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { readPage, summarize } from './host/bundle.ts'
+import { findLocalBundleRoots, isBundleRoot, readPage, summarize } from './host/bundle.ts'
 import { GitError } from './host/git.ts'
 import { IndexCache, sessionContext } from './host/knowledge.ts'
 import { GitHubError } from './host/github.ts'
 import { LibraryError, openLibrary } from './host/library.ts'
 import type { Library } from './host/library.ts'
+import { pickFolder } from './host/picker.ts'
+import { bundledSkills, skillProvider } from './host/skills.ts'
 import { RunError } from './host/run.ts'
+import { isEmptyFolder } from './host/starter.ts'
 import { openTeam } from './host/team.ts'
 import { wikiTools } from './host/tools.ts'
 import type { Team } from './host/team.ts'
 import type { HostContext } from './types/contract.ts'
 import { ROUTES } from './types/okf.ts'
-import type { AddLocalRequest, FetchRequest } from './types/okf.ts'
+import type { AddLocalRequest, FetchRequest, PickFolderAnswer } from './types/okf.ts'
 
 /** The Host service this half cannot work without. */
 export const inject = ['connection']
@@ -58,6 +64,21 @@ export interface Config {
   readonly indexChars?: number
   /** Tell the model about the session's bundle. Default true. */
   readonly promptContext?: boolean
+  /**
+   * The skill that sets up a new knowledge base in an empty local folder,
+   * when DSH has it in `<DSH home>/skills`, `~/.agents/skills` or `skillDirs`:
+   * the new session's composer is then prefilled with `/<setupSkill>`.
+   * Default `kb-setup` (knowledgeAgent's); `''` always uses the plugin's own setup.
+   */
+  readonly setupSkill?: string
+  /** More folders to look for `setupSkill` in (DSH's `customSkillDirs`), searched before the user folders. */
+  readonly skillDirs?: readonly string[]
+  /**
+   * Offer the plugin's own copies of knowledgeAgent's kb-* skills (kb-setup,
+   * kb-ingest, kb-query, kb-review, kb-curate, kb-lint) to DSH, at the bundled
+   * rank so a same-named skill in a skill folder wins. Default true.
+   */
+  readonly skills?: boolean
   /** Give the model the Team Wiki tools `wiki_sync_from_code` and `wiki_open_pr`. Default true. */
   readonly tools?: boolean
   /** Team Wiki settings. */
@@ -98,6 +119,15 @@ export interface TeamConfigRow {
 export function dshHome(): string {
   const env = process.env.DSH_HOME?.trim()
   return env === undefined || env === '' ? join(homedir(), '.dsh') : env
+}
+
+/**
+ * The shared agent home DSH scans for skills: `$DSH_AGENTS_HOME`, else `~/.agents`.
+ * @returns the folder.
+ */
+export function agentsHome(): string {
+  const env = process.env.DSH_AGENTS_HOME?.trim()
+  return env === undefined || env === '' ? join(homedir(), '.agents') : env
 }
 
 /** Headers every answer carries. */
@@ -232,8 +262,18 @@ export const handlers: Readonly<Record<string, { methods: readonly ('GET' | 'POS
     methods: ['POST'],
     handle: route(['POST'], async (request, { library }) => {
       const record = await body(request)
-      const wanted: AddLocalRequest = { path: required(record, 'path'), ...optionalFields(record, ['id', 'name']) }
-      return json({ entry: await library.addLocal(wanted) })
+      const wanted: AddLocalRequest = { path: required(record, 'path'), ...optionalFields(record, ['id', 'name']), ...record.initialize === true ? { initialize: true } : {} }
+      return json(await library.addLocal(wanted))
+    }),
+  },
+  [ROUTES.pickFolder]: {
+    methods: ['POST'],
+    handle: route(['POST'], async (request) => {
+      const record = await body(request)
+      const start = optional(record, 'start')
+      const path = await pickFolder({ title: 'Choose the folder of an OKF bundle, or an empty folder for a new one', ...start === undefined ? {} : { start } })
+      if (path === null) return json({ path: null } satisfies PickFolderAnswer)
+      return json({ path, kind: await folderKind(path) } satisfies PickFolderAnswer)
     }),
   },
   [ROUTES.editWorkspace]: {
@@ -381,6 +421,20 @@ export const handlers: Readonly<Record<string, { methods: readonly ('GET' | 'POS
 }
 
 /**
+ * What a chosen folder holds, so the form can say what Add will do.
+ * @param path - an absolute folder.
+ * @returns bundle, empty, or other.
+ */
+async function folderKind(path: string): Promise<NonNullable<PickFolderAnswer['kind']>> {
+  try {
+    if (await isBundleRoot(path) || (await findLocalBundleRoots(path)).length > 0) return 'bundle'
+    return await isEmptyFolder(path) ? 'empty' : 'other'
+  } catch {
+    return 'other'
+  }
+}
+
+/**
  * Copy the optional string fields that are present.
  * @param record - the body.
  * @param keys - the fields.
@@ -416,10 +470,23 @@ function count(value: unknown, fallback: number, name: string): number {
  */
 export function apply(ctx: HostContext, config: Config | null | undefined = {}): void {
   const settings = config ?? {}
+  // The kb-* skills beside the built module, once DSH's skill registry has taken them.
+  const skillsRoot = fileURLToPath(new URL('../skills/', import.meta.url))
+  let skillsServed = false
   const library = openLibrary({
     dir: settings.libraryDir ?? join(dshHome(), 'okf'),
     ...settings.gitPath === undefined ? {} : { gitPath: settings.gitPath },
     gitTimeoutMs: count(settings.gitTimeoutMs, 300_000, 'gitTimeoutMs'),
+    python: settings.team?.python ?? (process.platform === 'win32' ? 'python' : 'python3'),
+    // An empty local folder gets the same toolchain Set up the hub writes.
+    okfScript: fileURLToPath(new URL('../templates/hub/scripts/okf.py', import.meta.url)),
+    setupSkill: settings.setupSkill ?? 'kb-setup',
+    // DSH's filesystem skill provider order after the project roots (a new folder has none).
+    skillRoots: [...settings.skillDirs ?? [], join(dshHome(), 'skills'), join(agentsHome(), 'skills')],
+    bundledSkill: async (name) => {
+      if (!skillsServed) return undefined
+      return (await bundledSkills(skillsRoot)).find(skill => skill.name === name && skill.invocation.userInvocable)?.file
+    },
   })
   const knowledge = {
     indexChars: count(settings.indexChars, 8000, 'indexChars'),
@@ -475,6 +542,18 @@ export function apply(ctx: HostContext, config: Config | null | undefined = {}):
   if (settings.promptContext !== false) {
     ctx.inject(['systemPrompt'], (scope) => {
       scope.systemPrompt.context(sessionContext(library, cache, knowledge))
+    })
+  }
+
+  if (settings.skills !== false) {
+    // Optional, like systemPrompt: without DSH's skill registry the setup falls back to the skill folders.
+    ctx.inject(['skills'], (scope) => {
+      try {
+        scope.skills.registerProvider(skillProvider(skillsRoot))
+        skillsServed = true
+      } catch (error) {
+        console.warn('[okf] could not offer the kb-* skills to DSH:', error)
+      }
     })
   }
 

@@ -22,7 +22,8 @@ import { basename, isAbsolute, join, relative, resolve, sep } from 'node:path'
 import { findBundleRoots, findLocalBundleRoots, isBundleRoot } from './bundle.ts'
 import { checkoutPath, cloneNoCheckout, fastForward, GitError, listFiles, parseRemote, pull, showFile, topLevel, unsavedWork, unshallow } from './git.ts'
 import type { GitOptions } from './git.ts'
-import type { AddLocalRequest, EditWorkspaceAnswer, FetchRequest, GitProvider, LibraryEntry, SessionSelection } from '../types/okf.ts'
+import { initKnowledgeBase, isEmptyFolder } from './starter.ts'
+import type { AddLocalAnswer, AddLocalRequest, EditWorkspaceAnswer, FetchRequest, GitProvider, LibraryEntry, SessionSelection } from '../types/okf.ts'
 
 /** A failure the routes turn into a 4xx with a code. */
 export class LibraryError extends Error {
@@ -76,6 +77,16 @@ export interface LibraryOptions {
   readonly gitTimeoutMs?: number
   /** Environment to read tokens from (a seam for tests). */
   readonly env?: NodeJS.ProcessEnv
+  /** The Python executable that runs okf.py when an empty folder becomes a knowledge base. Default `python` on Windows, else `python3`. */
+  readonly python?: string
+  /** The plugin's own okf.py, copied into a new knowledge base. */
+  readonly okfScript?: string
+  /** A skill that sets up a new knowledge base when DSH has it (default none); see `starter.ts`. */
+  readonly setupSkill?: string
+  /** DSH's skill folders, highest priority first, searched for `setupSkill`. */
+  readonly skillRoots?: readonly string[]
+  /** The instruction file of a skill the plugin serves to DSH itself, when it does. */
+  readonly bundledSkill?: (name: string) => Promise<string | undefined>
 }
 
 /** Environment variables a token is read from, most specific first. */
@@ -141,7 +152,12 @@ export interface Library {
   get(id: string): Promise<LibraryEntry>
   fetch(request: FetchRequest): Promise<LibraryEntry>
   update(id: string, force?: boolean): Promise<{ entry: LibraryEntry, changed: boolean }>
-  addLocal(request: AddLocalRequest): Promise<LibraryEntry>
+  /**
+   * Register a bundle already on disk. With `initialize`, an empty folder
+   * first becomes a new knowledge base (see `starter.ts`) and the entry is
+   * editable there at once.
+   */
+  addLocal(request: AddLocalRequest): Promise<AddLocalAnswer>
   remove(id: string, deleteFiles?: boolean): Promise<void>
   /**
    * Make a bundle editable in place. A git entry's checkout becomes a normal
@@ -339,9 +355,24 @@ export function openLibrary(options: LibraryOptions): Library {
       }
       if (!info.isDirectory()) throw new LibraryError('bad-path', `${wanted} is not a folder.`, 422)
       let root = wanted
-      if (!await isBundleRoot(wanted)) {
+      let created: AddLocalAnswer['created']
+      if (request.initialize === true && await isEmptyFolder(wanted)) {
+        const already = (await load()).entries.find(entry => entry.workspace !== undefined && contains(entry.workspace, wanted))
+        if (already !== undefined) throw new LibraryError('exists', `That folder is inside the workspace of "${already.id}".`, 409, { id: already.id })
+        const made = await initKnowledgeBase(wanted, request.name?.trim() || basename(wanted), {
+          python: options.python ?? (process.platform === 'win32' ? 'python' : 'python3'),
+          ...options.okfScript === undefined ? {} : { okfScript: options.okfScript },
+          git: options.gitPath ?? 'git',
+          timeoutMs: options.gitTimeoutMs ?? 300_000,
+          ...options.setupSkill === undefined ? {} : { setupSkill: options.setupSkill },
+          ...options.skillRoots === undefined ? {} : { skillRoots: options.skillRoots },
+          ...options.bundledSkill === undefined ? {} : { bundledSkill: options.bundledSkill },
+        })
+        root = made.root
+        created = { workspace: canonical(wanted), setup: made.setup, gitInit: made.gitInit, ...made.prompt === undefined ? {} : { prompt: made.prompt } }
+      } else if (!await isBundleRoot(wanted)) {
         const roots = await findLocalBundleRoots(wanted)
-        if (roots.length === 0) throw new LibraryError('no-bundle', 'No OKF bundle in this folder: nothing holds a SCHEMA.md or an index.md with okf_version.', 422)
+        if (roots.length === 0) throw new LibraryError('no-bundle', request.initialize === true ? 'No OKF bundle in this folder, and it is not empty. Choose a folder holding a bundle, or an empty folder to start a new one.' : 'No OKF bundle in this folder: nothing holds a SCHEMA.md or an index.md with okf_version.', 422)
         if (roots.length > 1) throw new LibraryError('many-bundles', `This folder holds ${String(roots.length)} bundles. Choose one.`, 422, { candidates: roots })
         root = roots[0] ?? wanted
       }
@@ -349,10 +380,17 @@ export function openLibrary(options: LibraryOptions): Library {
       const existing = data.entries.find(entry => resolve(entry.root) === root)
       if (existing !== undefined) throw new LibraryError('exists', `That folder is already in the library as "${existing.id}".`, 409, { id: existing.id })
       const id = uniqueId(data, request.id, basename(root) === 'okf' ? `${basename(resolve(root, '..'))}-okf` : basename(root))
-      const entry: LibraryEntry = { id, name: request.name?.trim() || `${basename(resolve(root, '..'))}/${basename(root)}`, root, origin: { kind: 'local' }, addedAt: new Date().toISOString() }
+      const entry: LibraryEntry = {
+        id,
+        name: request.name?.trim() || `${basename(resolve(root, '..'))}/${basename(root)}`,
+        root,
+        origin: { kind: 'local' },
+        addedAt: new Date().toISOString(),
+        ...created === undefined ? {} : { workspace: created.workspace },
+      }
       data.entries.push(entry)
       await save(data)
-      return entry
+      return created === undefined ? { entry } : { entry, created }
     }),
 
     remove: (id, deleteFiles = false) => serial(async () => {
