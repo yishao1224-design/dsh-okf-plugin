@@ -9,9 +9,9 @@
  */
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore, type CSSProperties, type ReactNode } from 'react'
 import type { Translate } from '../types/contract.ts'
-import type { BundleSummary, LibraryEntry, PageContent, PageSummary, PickFolderAnswer } from '../types/okf.ts'
+import type { BundleSummary, LibraryEntry, PageContent, PageSource, PageSummary, PickFolderAnswer } from '../types/okf.ts'
 import type { OkfKey } from './locales.ts'
-import { renderMarkdown } from './markdown.tsx'
+import { bundleFile, renderMarkdown } from './markdown.tsx'
 import { ApiFailure, type OkfState, type OkfStore } from './store.ts'
 import { st, sx } from './styles.ts'
 
@@ -627,6 +627,38 @@ function MarkReviewed({ store, folder, path, t }: { readonly store: OkfStore, re
 }
 
 /**
+ * A page's `sources`: pages open in place, files kept as-is (a workbook, a
+ * PDF) open with their default app, URLs open in the browser, and files
+ * outside the bundle (a repo file the page pins) show as text.
+ * @param props - the entries and how to open them.
+ * @returns the list.
+ */
+function SourceList({ sources, pagePath, openPage, openFile, t }: { readonly sources: readonly PageSource[], readonly pagePath: string, readonly openPage: (path: string) => void, readonly openFile: (path: string) => void, readonly t: T }): ReactNode {
+  return (
+    <div style={{ margin: '0 0 14px' }}>
+      <div style={{ ...st('muted'), marginBottom: 4 }}>{t('page.sources')}</div>
+      <ul style={{ margin: 0, paddingLeft: 18 }}>
+        {sources.map((source, index) => {
+          const label = source.title ?? source.id ?? source.resource
+          const id = source.id === undefined ? '' : `[${source.id}] `
+          const file = bundleFile(source.resource, pagePath)
+          let target: ReactNode
+          if (/^https?:\/\//i.test(source.resource)) {
+            target = <a style={st('mdLink')} href={source.resource} target="_blank" rel="noopener noreferrer">{label}</a>
+          } else if (file !== undefined && file !== '') {
+            const isPage = file.toLowerCase().endsWith('.md')
+            target = <a style={st('mdLink')} href="#" title={file} onClick={(event) => { event.preventDefault(); if (isPage) openPage(file); else openFile(file) }}>{label}</a>
+          } else {
+            target = <span title={source.resource}>{label} <span style={st('muted')}>({t('page.outside')})</span></span>
+          }
+          return <li key={`${String(index)}:${source.resource}`}>{id}{target}</li>
+        })}
+      </ul>
+    </div>
+  )
+}
+
+/**
  * One page: back link, frontmatter, rendered body.
  * @param props - the entry and page path.
  * @returns the page.
@@ -643,6 +675,20 @@ function PageView({ store, entry, path, summary, t }: { readonly store: OkfStore
     return () => { live = false }
   }, [store, entry.id, path])
   const known = summary.pages.find(candidate => candidate.path === path)
+  const [opening, setOpening] = useState<{ readonly text: string, readonly error: boolean } | undefined>(undefined)
+  useEffect(() => { setOpening(undefined) }, [path])
+  /** Open a bundle file that is not a page (a workbook, PDF, image) with its default app. */
+  const open = (target: string): void => {
+    if (target.toLowerCase().endsWith('.md')) {
+      store.openPage(target)
+      return
+    }
+    setOpening(undefined)
+    store.openFile(entry.id, target).then(
+      () => { setOpening({ text: t('page.opened', { name: target.split('/').at(-1) ?? target }), error: false }) },
+      (failure: unknown) => { setOpening({ text: t('page.openFailed', { path: target, message: (failure as Error).message }), error: true }) },
+    )
+  }
   return (
     <div>
       <div style={{ ...st('row'), marginBottom: 10 }}>
@@ -676,10 +722,12 @@ function PageView({ store, entry, path, summary, t }: { readonly store: OkfStore
               </table>
             </details>
           )}
+          {page.value.sources !== undefined && page.value.sources.length > 0 && <SourceList sources={page.value.sources} pagePath={path} openPage={(target) => { store.openPage(target) }} openFile={open} t={t} />}
+          {opening !== undefined && <div style={{ ...(opening.error ? st('error') : st('note')), marginBottom: 10 }}>{opening.text}</div>}
           <div style={st('markdown')}>
             {page.value.body.trim() === ''
               ? <p style={st('muted')}>{t('page.empty')}</p>
-              : renderMarkdown(page.value.body, { pagePath: path, onBundleLink: (target) => { store.openPage(target) } })}
+              : renderMarkdown(page.value.body, { pagePath: path, onBundleLink: (target) => { store.openPage(target) }, onFileLink: open })}
           </div>
         </>
       )}

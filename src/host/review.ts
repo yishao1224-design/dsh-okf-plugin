@@ -32,6 +32,14 @@ export interface ReviewState {
   readonly generatedAt?: string
 }
 
+/** One `sources` entry of a page. */
+export interface SourceRef {
+  /** Bundle-relative (`/sources/…`), document-relative (`../../x`), or a URL. */
+  readonly resource: string
+  readonly id?: string
+  readonly title?: string
+}
+
 /** A file split at its frontmatter. */
 export interface SplitPage {
   /** The lines between the `---` fences. */
@@ -207,6 +215,50 @@ function verifiedEntries(lines: readonly string[]): { by?: string, at?: string }
     else if (items.length > 0 && line.trim() !== '') items[items.length - 1]?.push(line)
   }
   return items.map(actor)
+}
+
+/**
+ * A page's `sources` entries (OKF v0.2 mappings), block or flow style.
+ * @param source - the file.
+ * @returns each entry's `resource`, `id` and `title`, in file order; entries without a `resource` are left out.
+ */
+export function sourceEntries(source: string): SourceRef[] {
+  const page = splitPage(source)
+  const lines = page === undefined ? undefined : keyLines(page.block, 'sources')
+  if (lines === undefined) return []
+  const items: string[][] = []
+  const inline = /^sources\s*:\s*\[(.*)\]\s*$/.exec(lines[0] ?? '')
+  if (inline !== null) {
+    for (const match of (inline[1] ?? '').matchAll(/\{[^}]*\}|[^,{}\s][^,{}]*/g)) items.push([match[0]])
+  } else {
+    for (const line of lines.slice(1)) {
+      if (/^\s*-/.test(line)) items.push([line.replace(/^(\s*)-\s*/, '$1  ')])
+      else if (items.length > 0 && line.trim() !== '') items[items.length - 1]?.push(line)
+    }
+  }
+  const out: SourceRef[] = []
+  for (const item of items) {
+    const joined = item.join('\n').trim()
+    if (!/^\{|\w+\s*:/.test(joined)) {
+      // A legacy bare string: the resource itself.
+      const bare = scalar(joined)
+      if (bare !== undefined) out.push({ resource: bare })
+      continue
+    }
+    const flow = joined.startsWith('{')
+    const field = (name: string): string | undefined => {
+      const match = flow
+        ? new RegExp(`(?:^|[\\s{,])${name}\\s*:\\s*([^,}\\n]+)`).exec(joined)
+        : new RegExp(`^\\s*${name}\\s*:(.*)$`, 'm').exec(joined)
+      return match === null ? undefined : scalar(match[1] ?? '')
+    }
+    const resource = field('resource')
+    if (resource === undefined) continue
+    const id = field('id')
+    const title = field('title')
+    out.push({ resource, ...id === undefined ? {} : { id }, ...title === undefined ? {} : { title } })
+  }
+  return out
 }
 
 /**

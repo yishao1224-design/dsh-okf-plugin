@@ -129,5 +129,5 @@ export function apply(ctx: ClientContext): void {
 }
 
 // Re-exported for scripts/smoke.mjs, which tests the built artifact only.
-export { bundleTarget, renderMarkdown } from './markdown.tsx'
+export { bundleFile, bundleTarget, renderMarkdown } from './markdown.tsx'
 export { slugify } from './team.tsx'

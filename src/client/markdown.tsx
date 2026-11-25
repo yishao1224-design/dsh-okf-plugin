@@ -5,7 +5,9 @@
  * elements (never `innerHTML`) means raw HTML in a page renders as text and
  * cannot run script. Links are limited to http(s) and mailto; any other href
  * is shown as text. Bundle links (`/concepts/foo.md`, `../entities/bar.md`)
- * are handed to `onBundleLink` so the preview can open the page in place.
+ * are handed to `onBundleLink` so the preview can open the page in place;
+ * links to other bundle files (a workbook or PDF kept under `sources/`) go
+ * to `onFileLink`, which opens them with their default app.
  *
  * Covers what OKF pages use: ATX headings, paragraphs, emphasis, inline code,
  * fenced code, block quotes, nested lists, GFM tables, rules, links, images
@@ -20,6 +22,8 @@ export interface MarkdownOptions {
   readonly pagePath: string
   /** Open a bundle page. */
   readonly onBundleLink: (path: string) => void
+  /** Open a bundle file that is not a page; without it such links show as text. */
+  readonly onFileLink?: (path: string) => void
 }
 
 /**
@@ -29,9 +33,20 @@ export interface MarkdownOptions {
  * @returns the bundle path, or undefined when the link leaves the bundle or is not a page.
  */
 export function bundleTarget(href: string, pagePath: string): string | undefined {
+  const target = bundleFile(href, pagePath)
+  return target?.toLowerCase().endsWith('.md') === true ? target : undefined
+}
+
+/**
+ * Resolve a link found in a page to a bundle-relative file of any kind.
+ * @param href - the link target.
+ * @param pagePath - the page holding the link.
+ * @returns the bundle path, or undefined when the link is external or leaves the bundle.
+ */
+export function bundleFile(href: string, pagePath: string): string | undefined {
   if (/^[a-z][a-z0-9+.-]*:/i.test(href) || href.startsWith('//') || href.startsWith('#')) return undefined
   const target = href.split('#')[0]?.split('?')[0] ?? ''
-  if (!target.toLowerCase().endsWith('.md')) return undefined
+  if (target === '') return undefined
   const base = target.startsWith('/') ? [] : pagePath.split('/').slice(0, -1)
   for (const part of target.split('/')) {
     if (part === '' || part === '.') continue
@@ -109,6 +124,16 @@ function link(href: string, label: ReactNode, options: MarkdownOptions): ReactNo
       style: st('mdLink'),
       title: target,
       onClick: (event: { preventDefault(): void }) => { event.preventDefault(); options.onBundleLink(target) },
+    }, label)
+  }
+  const file = options.onFileLink === undefined ? undefined : bundleFile(href, options.pagePath)
+  if (file !== undefined && file !== '') {
+    return createElement('a', {
+      key: key(),
+      href: '#',
+      style: st('mdLink'),
+      title: file,
+      onClick: (event: { preventDefault(): void }) => { event.preventDefault(); options.onFileLink?.(file) },
     }, label)
   }
   if (safeExternal(href)) return createElement('a', { key: key(), href, target: '_blank', rel: 'noopener noreferrer', style: st('mdLink') }, label)

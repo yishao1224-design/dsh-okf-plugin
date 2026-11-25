@@ -230,6 +230,12 @@ let list = must(await api('/api/okf/team/pulls', { query: { refresh: '1' } }), '
 check(list.pulls.length === 1 && list.pulls[0].wikis.join() === 'payments' && list.pulls[0].eligible === false, `pulls: ${JSON.stringify(list.pulls)}`)
 
 // ── Publish: render the bundle into published/Projects/ in the same workspace and PR ──
+// A workbook and a diagram kept as-is under sources/, cited from the page.
+writeFileSync(join(ws, 'payments', 'sources', '2026-11-25-refund-rates.xlsx'), 'PK\x03\x04 workbook')
+writeFileSync(join(ws, 'payments', 'sources', '2026-11-25-refund-flow.png'), 'png')
+writeFileSync(join(ws, 'payments', 'concepts', 'refunds.md'), readFileSync(join(ws, 'payments', 'concepts', 'refunds.md'), 'utf8')
+  .replace('tags: []\n', 'tags: []\nsources:\n  - resource: /sources/2026-11-25-refund-rates.xlsx\n    id: rates\n    title: Refund rates workbook, sheet Summary\n  - resource: https://example.com/refunds\n    id: web\n  - resource: ../../scripts/okf.py\n    id: code\n    title: okf.py\n')
+  .replace('Refunds go back', '![flow](/sources/2026-11-25-refund-flow.png)\n\nRefunds go back'))
 let published = must(await api('/api/okf/team/publish', { method: 'POST', body: { folder: 'payments' } }), 'publish')
 const pub = join(ws, 'published', 'Projects')
 check(published.created === false && published.record.id === record.id && published.dir === 'published/Projects/Payments' && published.pr?.pr?.number === 1 && published.pr.pr.reused === true && published.pr.eligible === false, `publish reuses the workspace and PR: ${JSON.stringify({ ...published, skipped: published.skipped.length })}`)
@@ -239,13 +245,17 @@ check(published.skipped.some(item => item.path.startsWith('sources/')) && !exist
 const refunds = readFileSync(join(pub, 'Payments', 'Concepts', 'Refunds.md'), 'utf8')
 check(refunds.startsWith('# Refunds\n\n> **Unreviewed.** Written by dsh/smoke') && refunds.includes('[the lifecycle](/Projects/Payments/Concepts/The-Knowledge-Lifecycle)') && !refunds.includes('lifecycle: draft') && refunds.includes('https://github.com/acme/hub/blob/main/payments/concepts/refunds.md'.replace('github.com', 'github.acme.com')), `rendered page: ${refunds}`)
 check(readFileSync(join(pub, 'Payments', 'Concepts', 'The-Knowledge-Lifecycle.md'), 'utf8').includes('> **Unreviewed.**'), 'the review state is on every page')
+const hubBlob = 'https://github.acme.com/acme/hub/blob/main/payments'
+check(refunds.includes(`\n## Sources\n\n- \`rates\` [Refund rates workbook, sheet Summary](${hubBlob}/sources/2026-11-25-refund-rates.xlsx)\n- \`web\` [web](https://example.com/refunds)\n- \`code\` okf.py\n`), `the sources become a list linking the workbook in the hub: ${refunds}`)
+check(refunds.includes(`![flow](${hubBlob}/sources/2026-11-25-refund-flow.png?raw=true)`), `an embedded source image loads its raw bytes: ${refunds}`)
+check(!published.pr.files.some(path => path.startsWith('published/') && /\.(xlsx|png)$/.test(path)), 'source files are not copied into the wiki')
 const landing = readFileSync(join(pub, 'Payments.md'), 'utf8')
 check(landing.startsWith('# Payments\n\nCard and wallet payments\n\nOwner: @alice · [Code repository](https://github.acme.com/pay/payments-service)') && landing.includes('](/Projects/Payments/Concepts/') && !/\]\(\/concepts\//.test(landing), `landing page: ${landing.slice(0, 900)}`)
 git(clone, 'fetch', '-q', 'origin')
 ci = checker(clone, `origin/${record.branch}`)
 check(ci.status === 1 && ci.stdout.includes('project wiki: payments') && ci.stdout.includes('published/Projects/Payments.md'), `check-pr maps the landing page: ${ci.status} ${ci.stdout} ${ci.stderr}`)
 published = must(await api('/api/okf/team/publish', { method: 'POST', body: { folder: 'payments' } }), 'publish again')
-check(published.unchanged === true && published.pr === undefined, `publishing an unchanged bundle proposes nothing: ${JSON.stringify(published.prError ?? published.unchanged)}`)
+check(published.unchanged === true && published.pr === undefined, `publishing an unchanged bundle proposes nothing: ${JSON.stringify({ ...published, record: undefined })}`)
 
 // ── Initialize from code: a read-only checkout in .code/, outside every pull request ──
 // The one button: Sync from code on a wiki never synced reads the code through, as Initialize does.

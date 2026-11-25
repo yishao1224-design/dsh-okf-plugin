@@ -208,6 +208,8 @@ export interface OkfStore {
   addLocal(path: string, id?: string, initialize?: boolean): Promise<AddLocalAnswer>
   /** Open the system folder dialog on the Host's machine. */
   pickFolder(start?: string): Promise<PickFolderAnswer>
+  /** Open a bundle file (a workbook, PDF, image kept under sources/) with its default app on the Host's machine. */
+  openFile(id: string, path: string): Promise<void>
   update(id: string, force?: boolean): Promise<{ entry: LibraryEntry, changed: boolean }>
   remove(id: string, deleteFiles: boolean): Promise<void>
   /**
@@ -446,6 +448,7 @@ export function createOkfStore(fetcher: Fetcher = (input, init) => globalThis.fe
       await refreshLibrary()
       return answer
     },
+    openFile: async (id, path) => { await call<{ ok: boolean }>(fetcher, ROUTES.openFile, { method: 'POST', body: { id, path } }) },
     pickFolder: start => call<PickFolderAnswer>(fetcher, ROUTES.pickFolder, { method: 'POST', body: start === undefined || start.trim() === '' ? {} : { start: start.trim() }, timeoutMs: PICK_TIMEOUT_MS }),
     async update(id, force = false) {
       const answer = await call<{ entry: LibraryEntry, changed: boolean }>(fetcher, ROUTES.update, { method: 'POST', body: { id, force }, timeoutMs: GIT_TIMEOUT_MS })
