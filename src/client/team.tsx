@@ -8,7 +8,7 @@
  * Two helpers ride along in a maintenance session: a header button that opens
  * the Open pull request dialog, and that dialog itself (in `shell.overlay`).
  */
-import { useEffect, useMemo, useState, type ReactNode } from 'react'
+import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import type { PanelIconProps, Translate } from '../types/contract.ts'
 import type { LibraryEntry, MaintainRecord, OpenPrAnswer, ProjectWiki, PullView, ReviewAnswer, TeamStatus, WikiPage } from '../types/okf.ts'
 import { BookIcon, Button, useOkf } from './components.tsx'
@@ -868,6 +868,18 @@ export function MaintainButton({ store, sessionId, t, compact = false }: Maintai
   useEffect(() => {
     if (found !== undefined && state.team.status.status === 'idle') void store.loadTeam()
   }, [store, found, state.team.status.status])
+  // The session points at an entry this page's list does not have yet (it was
+  // just made for a new project wiki): read the list again instead of waiting
+  // for a reload.
+  const bundleId = state.selections[sessionId]?.bundleId
+  const unknown = typeof bundleId === 'string' && state.library.status !== 'loading'
+    && !state.library.entries.some(candidate => candidate.id === bundleId)
+  const asked = useRef<string | undefined>(undefined)
+  useEffect(() => {
+    if (!unknown || asked.current === bundleId) return
+    asked.current = bundleId
+    void store.refreshLibrary()
+  }, [store, unknown, bundleId])
   // While its pull request is open, notice when it merges (e.g. on GitHub)
   // even when the Team Wiki page is not open: on coming back, every few minutes.
   const waiting = found?.record?.pr !== undefined && found.record.closed === undefined
