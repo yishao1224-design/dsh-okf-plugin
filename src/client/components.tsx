@@ -11,6 +11,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore
 import type { Translate } from '../types/contract.ts'
 import type { BundleSummary, LibraryEntry, PageContent, PageSource, PageSummary, PickFolderAnswer } from '../types/okf.ts'
 import type { OkfKey } from './locales.ts'
+import { fixSourceLink } from '../shared/gitweb.ts'
 import { bundleFile, renderMarkdown } from './markdown.tsx'
 import { ApiFailure, type OkfState, type OkfStore } from './store.ts'
 import { st, sx } from './styles.ts'
@@ -644,7 +645,7 @@ function SourceList({ sources, pagePath, openPage, openFile, t }: { readonly sou
           const file = bundleFile(source.resource, pagePath)
           let target: ReactNode
           if (/^https?:\/\//i.test(source.resource)) {
-            target = <a style={st('mdLink')} href={source.resource} target="_blank" rel="noopener noreferrer">{label}</a>
+            target = <a style={st('mdLink')} href={fixSourceLink(source.resource)} target="_blank" rel="noopener noreferrer">{label}</a>
           } else if (file !== undefined && file !== '') {
             const isPage = file.toLowerCase().endsWith('.md')
             target = <a style={st('mdLink')} href="#" title={file} onClick={(event) => { event.preventDefault(); if (isPage) openPage(file); else openFile(file) }}>{label}</a>

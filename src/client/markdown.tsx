@@ -15,6 +15,7 @@
  */
 import { createElement, Fragment, type CSSProperties, type ReactNode } from 'react'
 import { st } from './styles.ts'
+import { fixSourceLink } from '../shared/gitweb.ts'
 
 /** How links behave. */
 export interface MarkdownOptions {
@@ -136,7 +137,7 @@ function link(href: string, label: ReactNode, options: MarkdownOptions): ReactNo
       onClick: (event: { preventDefault(): void }) => { event.preventDefault(); options.onFileLink?.(file) },
     }, label)
   }
-  if (safeExternal(href)) return createElement('a', { key: key(), href, target: '_blank', rel: 'noopener noreferrer', style: st('mdLink') }, label)
+  if (safeExternal(href)) return createElement('a', { key: key(), href: fixSourceLink(href), target: '_blank', rel: 'noopener noreferrer', style: st('mdLink') }, label)
   return createElement('span', { key: key(), title: href }, label)
 }
 

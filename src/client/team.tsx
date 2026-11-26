@@ -16,6 +16,7 @@ import type { OkfInjected } from './components.tsx'
 import type { OkfKey } from './locales.ts'
 import type { OkfState, OkfStore, OpenOutcome } from './store.ts'
 import { st, sx } from './styles.ts'
+import { webUrl } from '../shared/gitweb.ts'
 
 /** How often an open workspace pull request is checked for a merge. */
 const PR_POLL_MS = 3 * 60_000
@@ -441,16 +442,6 @@ function EmptyHub({ store, data, t }: { readonly store: OkfStore, readonly data:
   )
 }
 
-/**
- * A browsable URL for a git remote.
- * @param url - https or scp-style ssh.
- * @returns the web URL.
- */
-export function webUrl(url: string): string {
-  const scp = /^[\w.-]+@([\w.-]+):(.+)$/.exec(url.trim())
-  const https = scp !== null && !url.includes('://') ? `https://${scp[1] ?? ''}/${scp[2] ?? ''}` : url.trim().replace(/^ssh:\/\/[^@/]+@/, 'https://').replace(/\/\/[^@/]+@/, '//')
-  return https.replace(/\.git$/, '').replace(/\/$/, '')
-}
 
 /**
  * The lines a project's code repository puts in its own AGENTS.md so agents

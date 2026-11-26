@@ -27,6 +27,7 @@ import { posix } from 'node:path'
 import { reviewState, sourceEntries, splitPage } from './review.ts'
 import { pageStage } from './stage.ts'
 import { parsePage, text as metaText } from './frontmatter.ts'
+import { fileUrl, fixSourceLink, isAzureWeb } from '../shared/gitweb.ts'
 
 /** A file of the bundle. */
 export interface BundleFile {
@@ -80,17 +81,7 @@ export function adoName(title: string): string {
     .replace(/ /g, '-')
 }
 
-/**
- * A browsable URL for a git remote.
- * @param url - https or scp-style ssh.
- * @returns the web URL, without credentials or `.git`.
- */
-export function webUrl(url: string): string {
-  const trimmed = url.trim()
-  const scp = /^[\w.-]+@([\w.-]+):(.+)$/.exec(trimmed)
-  const https = scp !== null && !trimmed.includes('://') ? `https://${scp[1] ?? ''}/${scp[2] ?? ''}` : trimmed.replace(/^ssh:\/\/[^@/]+@/, 'https://').replace(/\/\/[^@/]+@/, '//')
-  return https.replace(/\.git$/, '').replace(/\/$/, '')
-}
+export { webUrl } from '../shared/gitweb.ts'
 
 /**
  * The published folder of a project, hub-relative.
@@ -169,7 +160,9 @@ export function renderBundle(files: readonly BundleFile[], project: PublishProje
     if (description !== undefined) descriptionOf.set(file.path, description)
   }
 
-  const hubFile = (path: string): string => `${project.hubWeb}/blob/${project.branch}/${project.folder === '' ? '' : `${project.folder}/`}${path.split('/').map(encodeURIComponent).join('/')}`
+  const hubFile = (path: string): string => fileUrl(project.hubWeb, { branch: project.branch }, `${project.folder === '' ? '' : `${project.folder}/`}${path}`)
+  // An embedded image needs the file's bytes, not the host's page about it.
+  const rawSuffix = isAzureWeb(project.hubWeb) ? '' : '?raw=true'
   const wikiLink = (out: string): string => `${wikiRoot}/${out}`
 
   /** Rewrite the links of a body that lives at `from` in the bundle. */
@@ -192,8 +185,7 @@ export function renderBundle(files: readonly BundleFile[], project: PublishProje
         const page = target.get(resolved)
         if (page !== undefined && bang === '') return `[${label}](${wikiLink(page)}${anchor === undefined ? '' : `#${anchor}`}${title})`
         if (resolved === 'index.md' && bang === '') return `[${label}](${wikiRoot}${title})`
-        // An embedded image needs the file's bytes, not GitHub's page about it.
-        if (known.has(resolved)) return `${bang}[${label}](${hubFile(resolved)}${bang === '' ? '' : '?raw=true'}${anchor === undefined ? '' : `#${anchor}`}${title})`
+        if (known.has(resolved)) return `${bang}[${label}](${hubFile(resolved)}${bang === '' ? '' : rawSuffix}${anchor === undefined ? '' : `#${anchor}`}${title})`
         return bang === '' ? label : whole
       })
     }).join('\n')
@@ -210,7 +202,7 @@ export function renderBundle(files: readonly BundleFile[], project: PublishProje
     const lines = entries.map((entry) => {
       const label = (entry.title ?? entry.id ?? entry.resource).replace(/[[\]]/g, '')
       const cite = entry.id === undefined ? '' : `\`${entry.id}\` `
-      if (/^https?:\/\//i.test(entry.resource)) return `- ${cite}[${label}](${entry.resource})`
+      if (/^https?:\/\//i.test(entry.resource)) return `- ${cite}[${label}](${fixSourceLink(entry.resource)})`
       const rawPath = entry.resource.split('#')[0] ?? ''
       const resolved = rawPath.startsWith('/') ? posix.normalize(rawPath.slice(1)) : posix.normalize(posix.join(posix.dirname(from), rawPath))
       const page = target.get(resolved)
