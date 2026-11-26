@@ -521,6 +521,16 @@ html = dialog()
 check(html.includes('Open editing workspace') && html.includes('>Editable<'), 'an editable bundle offers to reopen its workspace and is marked editable')
 await store.select('s-2', 'remote-b-two')
 check((await api('/api/okf/session', { query: { sessionId: 's-2' } })).body?.bundleId === 'remote-b-two', 'the store\'s select reached the Host')
+// A selection read that started before select() must not undo it (a new
+// maintenance session's header mounts while the session is being attached).
+const staleRead = store.loadSelection('s-race')
+await Promise.all([staleRead, store.select('s-race', 'alpha-kb')])
+check(store.getSnapshot().selections['s-race']?.bundleId === 'alpha-kb', `an older selection read undid select(): ${JSON.stringify(store.getSnapshot().selections['s-race'])}`)
+// A refresh asked for during another one reads the list again afterwards.
+const libraryReads = () => calls.filter(call => String(call.input).includes('okf/library')).length
+const readsBefore = libraryReads()
+await Promise.all([store.refreshLibrary(), store.refreshLibrary(), store.refreshLibrary()])
+check(libraryReads() - readsBefore === 2, `refreshes during a refresh: ${String(libraryReads() - readsBefore)} reads`)
 const sum = await store.summary('alpha-kb')
 check(sum.pages.length === 7, `store summary pages ${String(sum.pages.length)}`)
 store.closeDialog()

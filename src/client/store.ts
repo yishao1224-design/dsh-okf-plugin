@@ -295,6 +295,8 @@ export function createOkfStore(fetcher: Fetcher = (input, init) => globalThis.fe
   let disposed = false
   let libraryInflight: Promise<void> | undefined
   const selectionInflight = new Map<string, Promise<void>>()
+  /** Bumped by select(), so an older selection read cannot undo it. */
+  const selectionVersion = new Map<string, number>()
 
   const set = (next: Partial<OkfState>): void => {
     if (disposed) return
@@ -305,26 +307,44 @@ export function createOkfStore(fetcher: Fetcher = (input, init) => globalThis.fe
     set({ selections: { ...state.selections, [sessionId]: selection } })
   }
 
+  // A refresh asked for while one is in flight runs again after it: that one
+  // may have read the list before the change the caller just made (a new
+  // maintenance entry, say), and reusing it would leave the change unseen.
+  let libraryQueued: Promise<void> | undefined
+  const fetchLibrary = async (): Promise<void> => {
+    try {
+      const answer = await call<{ entries: LibraryEntry[], libraryDir: string }>(fetcher, ROUTES.library)
+      set({ library: { status: 'ready', entries: answer.entries, libraryDir: answer.libraryDir } })
+    } catch (error) {
+      set({ library: { ...state.library, status: 'offline', error: (error as Error).message } })
+    }
+  }
   const refreshLibrary = (): Promise<void> => {
-    libraryInflight ??= (async () => {
-      try {
-        const answer = await call<{ entries: LibraryEntry[], libraryDir: string }>(fetcher, ROUTES.library)
-        set({ library: { status: 'ready', entries: answer.entries, libraryDir: answer.libraryDir } })
-      } catch (error) {
-        set({ library: { ...state.library, status: 'offline', error: (error as Error).message } })
-      }
-    })().finally(() => { libraryInflight = undefined })
-    return libraryInflight
+    if (libraryInflight === undefined) {
+      const run = fetchLibrary().finally(() => { if (libraryInflight === run) libraryInflight = undefined })
+      libraryInflight = run
+      return run
+    }
+    libraryQueued ??= libraryInflight.then(() => {
+      libraryQueued = undefined
+      return refreshLibrary()
+    })
+    return libraryQueued
   }
 
   const loadSelection = (sessionId: string): Promise<void> => {
     let inflight = selectionInflight.get(sessionId)
     if (inflight === undefined) {
+      const asked = selectionVersion.get(sessionId) ?? 0
       inflight = (async () => {
         try {
           const answer = await call<SessionSelection | null>(fetcher, ROUTES.session, { query: { sessionId } })
+          // select() ran meanwhile (e.g. a new maintenance session was attached
+          // while its header mounted): this answer may predate it, keep the newer one.
+          if ((selectionVersion.get(sessionId) ?? 0) !== asked) return
           setSelection(sessionId, { loaded: true, bundleId: answer?.bundleId ?? null })
         } catch (error) {
+          if ((selectionVersion.get(sessionId) ?? 0) !== asked) return
           setSelection(sessionId, { loaded: true, bundleId: state.selections[sessionId]?.bundleId ?? null, error: (error as Error).message })
         }
       })().finally(() => { selectionInflight.delete(sessionId) })
@@ -344,6 +364,7 @@ export function createOkfStore(fetcher: Fetcher = (input, init) => globalThis.fe
 
   const select = async (sessionId: string, bundleId: string | null): Promise<void> => {
     const before = state.selections[sessionId]
+    selectionVersion.set(sessionId, (selectionVersion.get(sessionId) ?? 0) + 1)
     setSelection(sessionId, { loaded: true, bundleId })
     try {
       await call(fetcher, ROUTES.session, { method: 'POST', body: { sessionId, bundleId } })
