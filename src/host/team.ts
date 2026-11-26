@@ -45,13 +45,14 @@ import { addRegistryRow, parseRegistry } from './registry.ts'
 import { suggestPr } from './summary.ts'
 import type { SummaryFile } from './summary.ts'
 import { adoName, publishedDir, publishedProject, renderBundle, webUrl } from './publish.ts'
+import { fixSourceLinks, sourceTemplate } from '../shared/gitweb.ts'
 import type { BundleFile } from './publish.ts'
 import { GitHub, parseGitHubRemote } from './github.ts'
 import type { ChecksState, PullRequest, PullSummary } from './github.ts'
 import { AzureDevOps } from './azure.ts'
 import { canonical, cleanRepoPath, LibraryError, TOKEN_ENV } from './library.ts'
 import type { Library } from './library.ts'
-import { addLogCommit, affectedPages, citedCommit, dropSchemaCommit, frontmatterOf, logCommit, parseNameStatus as parseCodeChanges, sameCommit, schemaCommit, syncPrompt } from './codesync.ts'
+import { addLogCommit, addLogLine, affectedPages, citedCommit, dropSchemaCommit, frontmatterOf, logCommit, parseNameStatus as parseCodeChanges, sameCommit, schemaCommit, syncPrompt } from './codesync.ts'
 import { describeReview, markReviewed, joinPage, reviewState, setKeys, splitPage, stampAgentEdit, today } from './review.ts'
 import { run, RunError } from './run.ts'
 import type {
@@ -996,6 +997,19 @@ export function openTeam(options: TeamOptions): Team {
     const bundle = join(record.workspace, ...record.wiki.split('/'))
     const log = join(bundle, 'log.md')
     await writeFile(log, addLogCommit(await readFile(log, 'utf8').catch(() => undefined), { commit, repo, ...from === undefined ? {} : { from } }, today()))
+    // Earlier Initialize runs asked for GitHub-shaped links (`…/_git/<repo>/blob/<sha>/<path>`),
+    // which Azure DevOps answers with a 404: rewrite them while the pages are open anyway.
+    let fixed = 0
+    for (const page of await bundleFrontmatters(bundle)) {
+      const file = join(bundle, ...page.path.split('/'))
+      const text = await readFile(file, 'utf8').catch(() => undefined)
+      if (text === undefined) continue
+      const out = fixSourceLinks(text)
+      if (out.count === 0) continue
+      await writeFile(file, out.text)
+      fixed += out.count
+    }
+    if (fixed > 0) await writeFile(log, addLogLine(await readFile(log, 'utf8'), `* **Fix**: rewrote ${String(fixed)} Azure DevOps source link${fixed === 1 ? '' : 's'} from \`/blob/<sha>/<path>\` to \`?path=/<path>&version=GC<sha>\`, the form Azure DevOps serves.`, today()))
     const schema = join(bundle, 'SCHEMA.md')
     const before = await readFile(schema, 'utf8').catch(() => undefined)
     if (before === undefined) return
@@ -1011,7 +1025,7 @@ export function openTeam(options: TeamOptions): Team {
     await recordCommit(record, commit, url)
     const date = today()
     const folder = record.wiki
-    const resource = /^https?:\/\//.test(url) ? `${webUrl(url)}/blob/${commit}/<path>` : `${url} at ${commit}, <path>`
+    const resource = sourceTemplate(url, commit)
     const prompt = [
       `Initialize the ${record.wikiName} project wiki (the OKF bundle \`${folder}/\`) from the project's code.`,
       '',
@@ -1086,7 +1100,7 @@ export function openTeam(options: TeamOptions): Team {
       const commits = (await git(code.target, ['log', '--no-decorate', '--format=%h %s', `${recorded}..${code.commit}`])).split('\n').filter(line => line !== '')
       const affected = affectedPages(await bundleFrontmatters(bundle), changes)
       await recordCommit(record, code.commit, code.url, recorded)
-      const resource = /^https?:\/\//.test(code.url) ? `${webUrl(code.url)}/blob/${code.commit}/<path>` : `${code.url} at ${code.commit}, <path>`
+      const resource = sourceTemplate(code.url, code.commit)
       const prompt = syncPrompt({ wikiName: record.wikiName, folder: record.wiki, url: code.url, code: code.rel, from: recorded, to: code.commit, commits, changes, affected, resource, agent: options.agentActor, date: today() })
       return { from: recorded, to: code.commit, files: changes.length, pages: affected.length, init: { code: code.rel, repo: code.url, commit: code.commit, prompt } }
     })

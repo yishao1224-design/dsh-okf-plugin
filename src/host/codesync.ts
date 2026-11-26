@@ -10,9 +10,10 @@
  * synced before that kept `code_commit` in SCHEMA.md's frontmatter, which is
  * still read and is dropped the next time a sync records a commit; wikis
  * with neither fall back to the commit their pages' `sources` cite most
- * often (`…/blob/<sha>/…`).
+ * often (`…/blob/<sha>/…`, or Azure DevOps' `…&version=GC<sha>`).
  */
 
+import { linkedCommits } from '../shared/gitweb.ts'
 import { splitPage } from './review.ts'
 
 /** A changed file between two commits, from `git diff --name-status`. */
@@ -45,15 +46,15 @@ export function schemaCommit(schema: string): string | undefined {
 }
 
 /**
- * The commit pages cite most often in `…/blob/<sha>/…` source links.
+ * The commit pages cite most often in source links (`…/blob/<sha>/…`, or
+ * `…?path=…&version=GC<sha>` on Azure DevOps).
  * @param frontmatters - the pages' frontmatter text.
  * @returns the commit, or undefined when none cites one.
  */
 export function citedCommit(frontmatters: readonly string[]): string | undefined {
   const counts = new Map<string, number>()
   for (const text of frontmatters) {
-    for (const match of text.matchAll(/\/blob\/([0-9a-f]{7,40})\//g)) {
-      const sha = match[1] ?? ''
+    for (const sha of linkedCommits(text)) {
       counts.set(sha, (counts.get(sha) ?? 0) + 1)
     }
   }
@@ -98,8 +99,19 @@ export function logCommit(log: string): string | undefined {
  * @returns the new text.
  */
 export function addLogCommit(log: string | undefined, entry: { commit: string, from?: string, repo: string }, date: string): string {
+  return addLogLine(log, `* **Sync**: the wiki reflects ${entry.repo} at \`code_commit: ${entry.commit}\`${entry.from === undefined ? ' (first read-through)' : ` (was ${entry.from.slice(0, 10)})`}.`, date)
+}
+
+/**
+ * Add one entry to a log.md, as `okf.py log` adds entries: under today's
+ * `## YYYY-MM-DD` heading, newest first.
+ * @param log - the log.md text, or undefined when there is none yet.
+ * @param line - the entry, e.g. `* **Fix**: …`.
+ * @param date - today, `YYYY-MM-DD`.
+ * @returns the new text.
+ */
+export function addLogLine(log: string | undefined, line: string, date: string): string {
   const eol = log?.includes('\r\n') === true ? '\r\n' : '\n'
-  const line = `* **Sync**: the wiki reflects ${entry.repo} at \`code_commit: ${entry.commit}\`${entry.from === undefined ? ' (first read-through)' : ` (was ${entry.from.slice(0, 10)})`}.`
   const text = log ?? `# Bundle Update Log${eol}`
   const lines = text.split(/\r?\n/)
   const heading = `## ${date}`
@@ -188,7 +200,7 @@ export function affectedPages(pages: readonly { path: string, frontmatter: strin
       // A whole path: not the tail of a longer name, nor the head of one.
       const before = page.frontmatter[at - 1] ?? ' '
       const after = page.frontmatter[at + path.length] ?? ' '
-      return /[\s/'"(:,[]/.test(before) && /[\s'"),#\]]|$/.test(after)
+      return /[\s/'"(:,[=]/.test(before) && /[\s'"),#\]&]|$/.test(after)
     })
     if (cites.length > 0) out.push({ path: page.path, cites })
   }
@@ -207,7 +219,7 @@ export interface SyncTask {
   readonly commits: readonly string[]
   readonly changes: readonly CodeChange[]
   readonly affected: readonly AffectedPage[]
-  /** `<web>/blob/<to>/<path>` or similar, for re-pinned sources. */
+  /** `<web>/blob/<to>/<path>` (Azure DevOps: `<web>?path=/<path>&version=GC<to>`), for re-pinned sources. */
   readonly resource: string
   readonly agent: string
   readonly date: string

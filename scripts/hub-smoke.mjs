@@ -298,6 +298,12 @@ status = must(await api('/api/okf/team/refresh', { method: 'POST', body: {} }), 
 paymentsCode = status.wikis.find(wiki => wiki.folder === 'payments')?.code
 check(paymentsCode?.behind === true && paymentsCode.head === codeAfter && paymentsCode.recorded === codeBefore, `code updated: ${JSON.stringify(paymentsCode)}`)
 check(status.wikis.find(wiki => wiki.folder === 'ledger')?.code === undefined, 'a project without a repository has no code state')
+// A page an earlier Initialize wrote with a GitHub-shaped Azure DevOps link (a 404 there): Sync rewrites it.
+const brokenAdo = 'https://dev.azure.com/acme/pay/_git/legacy/blob/0123456789abcdef0123456789abcdef01234567/app/main.py'
+writeFileSync(join(ws, 'payments', 'concepts', 'legacy.md'), [
+  '---', 'type: Concept', 'title: Legacy', 'description: The old service.', 'status: draft', 'tags: [core]', 'updated: 2026-11-20',
+  'sources:', '  - id: legacy', `    resource: ${brokenAdo}`, '---', '', '# Legacy', '', `See [main.py](${brokenAdo}#L3-L9).`, '',
+].join('\n'))
 const synced = must(await api('/api/okf/team/sync', { method: 'POST', body: { folder: 'payments' } }), 'sync')
 check(synced.record?.id === record.id && synced.sync?.from === codeBefore && synced.sync.to === codeAfter && synced.sync.files === 2 && synced.sync.pages === 1, `sync: ${JSON.stringify(synced.sync)}`)
 const syncTask = synced.initialize?.prompt ?? ''
@@ -305,6 +311,11 @@ check(syncTask.includes('- concepts/overview.md: src/main.ts') && syncTask.inclu
 paymentsLog = readFileSync(join(ws, 'payments', 'log.md'), 'utf8')
 check(newestSync(paymentsLog) === codeAfter && paymentsLog.includes(`(was ${codeBefore.slice(0, 10)}).`) && existsSync(join(ws, '.code', 'payments', 'src', 'refund.ts')), 'the workspace log records the new commit and the workspace has the new code')
 check(syncTask.includes(`log.md already has a **Sync** entry recording \`code_commit: ${codeAfter}\``), 'the task says the sync entry is already there')
+const legacy = readFileSync(join(ws, 'payments', 'concepts', 'legacy.md'), 'utf8')
+const fixedAdo = 'https://dev.azure.com/acme/pay/_git/legacy?path=/app/main.py&version=GC0123456789abcdef0123456789abcdef01234567'
+check(!legacy.includes('/blob/') && legacy.includes(`resource: ${fixedAdo}\n`) && legacy.includes(`(${fixedAdo}&line=3&lineEnd=9&`), `Azure DevOps /blob/ links are rewritten: ${legacy}`)
+check(readFileSync(join(ws, 'payments', 'concepts', 'overview.md'), 'utf8').includes(`https://github.acme.com/pay/payments-service/blob/${codeBefore}/src/main.ts`), 'GitHub links stay as they are')
+check(paymentsLog.includes('* **Fix**: rewrote 2 Azure DevOps source links'), `the fix is logged: ${paymentsLog.slice(0, 600)}`)
 
 // ── The model tools an automation task calls: sync, edit, open the pull request ──
 const callTool = async (name, args, cwd) => {
