@@ -311,11 +311,16 @@ function parseStatus(output: string): { path: string, code: string }[] {
 /**
  * Whether a bundle-relative page path is a wiki page the counts include.
  * @param rel - the path.
- * @returns false for index.md, log.md, captures and archived pages.
+ * Structural files are not knowledge pages: SCHEMA.md (the conventions,
+ * reviewed in the pull request that changes them), and index.md and log.md at
+ * any depth (generated catalogs and the change history).
+ * @returns false for structural files, captures and archived pages.
  */
 function countsAsPage(rel: string): boolean {
   if (!rel.endsWith('.md')) return false
-  if (rel === 'index.md' || rel === 'log.md') return false
+  if (rel === 'SCHEMA.md') return false
+  const name = rel.slice(rel.lastIndexOf('/') + 1)
+  if (name === 'index.md' || name === 'log.md') return false
   return !rel.startsWith('sources/') && !rel.startsWith('archive/')
 }
 

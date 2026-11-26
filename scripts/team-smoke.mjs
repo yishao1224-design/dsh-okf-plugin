@@ -175,7 +175,7 @@ check(stats.pages > 5 && stats.reviewed === 1 && stats.unreviewed === stats.page
 const detail = must(await api('/api/okf/team/wiki', { query: { folder: 'okf/payments' } }), 'wiki')
 const reviewed = detail.pages.find(page => page.path === 'concepts/knowledge-lifecycle.md')
 check(reviewed?.review === 'reviewed' && reviewed.reviewer === 'alice' && reviewed.reviewedAt === '2026-08-27', `reviewed page: ${JSON.stringify(reviewed)}`)
-check(!detail.pages.some(page => page.path === 'index.md' || page.path === 'log.md' || page.path.startsWith('sources/')), 'index, log and captures are not counted as pages')
+check(!detail.pages.some(page => page.path === 'index.md' || page.path === 'log.md' || page.path === 'SCHEMA.md' || page.path.endsWith('/index.md') || page.path.startsWith('sources/')), 'SCHEMA.md, index, log and captures are not counted as pages')
 check((await api('/api/okf/team/wiki', { query: { folder: 'okf/nope' } })).status === 404, 'an unknown wiki is 404')
 
 // Preview: a read-only library entry on the base branch.
